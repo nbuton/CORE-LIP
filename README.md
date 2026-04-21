@@ -44,14 +44,53 @@ CORE-LIP/
 ## Installation
 
 ```bash
+git clone https://github.com/nbuton/CORE-LIP
 pip install -r requirements.txt
 pip install -e .          # installs core_lip as an editable package
 ```
 
 ---
 
-## Using CORE-LIP as a Prediction Tool
-TODO
+##  Using CORE-LIP as a Prediction Tool
+
+We provide two ways to run CORE-LIP: a "zero-setup" cloud version and a high-throughput local version.
+
+### Option A: Google Colab (Recommended for single sequences)
+For a quick prediction without local installation, use our managed notebook. It handles environment setup and dependencies automatically.
+> [!TIP]
+> **[Open in Colab](https://colab.research.google.com/github/xxxxx)** — Input your sequence and click **Runtime > Run All**.
+
+---
+
+### Option B: Local Production Pipeline
+Use this for large-scale datasets or custom workflows. This pipeline requires pre-generated conformational ensembles.
+
+#### 1. Generate Conformational Ensembles
+CORE-LIP predicts based on structural dynamics. You must first generate full-atom ensembles:
+* **Fold:** Generate coarse-grained ensembles using [IDPFold2](https://github.com/Junjie-Zhu/IDPFold2).
+* **Backmap:** Convert to full-atom resolution using `cg2all` (refer to the script in the IDPFold2 repository).
+* **Organize:** Place the output in `data/conformational_ensemble/IDPFold2/`. 
+
+**Required Directory Structure:**
+```text
+data/conformational_ensemble/IDPFold2/
+└── [Protein_ID]/
+    ├── top_AA.pdb   # All-atom topology
+    └── traj_AA.xtc  # All-atom trajectory
+```
+
+#### 2. Run Production Inference
+Once your ensembles are ready, run the unified production script. This script handles property computation and LIP prediction in one go:
+
+```bash
+python scripts/production_predict.py \
+    --model      data/models/production_core_lip.pt \
+    --h5         data/protein_IDPFold2_properties.h5 \
+    --datasets   data/CLIP_dataset/my_sequences.fasta \
+    --output_dir data/predictions/
+```
+
+---
 
 ## Paper Reproduction Workflow
 ### 0 - Preliminary Data Acquisition (Optional)
