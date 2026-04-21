@@ -1,0 +1,23 @@
+# CORE-LIP dependencies
+
+# Deep learning
+torch>=2.0
+
+# Scientific computing
+numpy>=1.24
+scipy>=1.10
+scikit-learn>=1.3
+
+# Data handling
+pandas>=2.0
+h5py>=3.9
+
+# MD analysis (required for compute_properties.py only)
+mdtraj>=1.9
+# idpmdp  # install separately from your local repo
+
+# Visualization
+matplotlib>=3.7
+
+# Utilities
+tqdm>=4.65
