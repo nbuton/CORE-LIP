@@ -7,7 +7,7 @@ LIP and non-LIP residues, and saves a publication-ready PDF figure.
 Usage
 -----
     python scripts/visualize_features.py \
-        --dataset  data/CLIP_dataset/TR1000_reduced.txt \
+        --dataset  data/CLIP_dataset/TR1000_max_1024.txt \
         --h5       data/protein_MD_properties.h5 \
         --output   results/feature_comparison_violin.pdf
 """
@@ -341,7 +341,7 @@ def make_figure(data: dict, output_path: str, ncols: int = 4) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Visualise feature distributions.")
-    parser.add_argument("--dataset", default="data/CLIP_dataset/TR1000_reduced.txt")
+    parser.add_argument("--dataset", default="data/CLIP_dataset/TR1000_max_1024.txt")
     parser.add_argument("--h5", default="data/protein_MD_properties.h5")
     parser.add_argument("--output", default="results/feature_comparison_violin.pdf")
     parser.add_argument("--ncols", type=int, default=4)

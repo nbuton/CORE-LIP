@@ -8,10 +8,10 @@ exactly as in the CLIP benchmarking protocol.
 Usage
 -----
     python scripts/evaluate.py \
-        --train_truth  data/CLIP_dataset/TR1000_reduced.txt \
-        --train_preds  data/predictions/core_lip_TR1000_reduced.csv \
-        --test_truth   data/CLIP_dataset/TE440_reduced.txt \
-        --test_preds   data/predictions/core_lip_TE440_reduced.csv \
+        --train_truth  data/CLIP_dataset/TR1000_max_1024.txt \
+        --train_preds  data/predictions/core_lip_TR1000_max_1024.csv \
+        --test_truth   data/CLIP_dataset/TE440_max_1024.txt \
+        --test_preds   data/predictions/core_lip_TE440_max_1024.csv \
         --output_dir   results/
 """
 
@@ -406,13 +406,15 @@ def plot_metrics_bar(
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate CORE-LIP predictions.")
-    parser.add_argument("--train_truth", default="data/CLIP_dataset/TR1000_reduced.txt")
     parser.add_argument(
-        "--train_preds", default="data/predictions/core_lip_TR1000_reduced.csv"
+        "--train_truth", default="data/CLIP_dataset/TR1000_max_1024.txt"
     )
-    parser.add_argument("--test_truth", default="data/CLIP_dataset/TE440_reduced.txt")
     parser.add_argument(
-        "--test_preds", default="data/predictions/core_lip_TE440_reduced.csv"
+        "--train_preds", default="data/predictions/core_lip_TR1000_max_1024.csv"
+    )
+    parser.add_argument("--test_truth", default="data/CLIP_dataset/TE440_max_1024.txt")
+    parser.add_argument(
+        "--test_preds", default="data/predictions/core_lip_TE440_max_1024.csv"
     )
     parser.add_argument(
         "--clip_preds",

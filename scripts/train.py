@@ -1,13 +1,13 @@
 """
 CORE-LIP — Step 3: Train the network
 =====================================
-Trains ProteinMultiScaleTransformer on the reduced CLIP dataset and saves the
+Trains ProteinMultiScaleTransformer on the max_1024 CLIP dataset and saves the
 best checkpoint (by validation loss).
 
 Usage
 -----
     python scripts/train.py \
-        --dataset  data/CLIP_dataset/TR1000_reduced.txt \
+        --dataset  data/CLIP_dataset/TR1000_max_1024.txt \
         --h5       data/protein_MD_properties.h5 \
         --model    data/models/core_lip.pt \
         --epochs   250 \
@@ -192,7 +192,7 @@ def train_one_epoch(
 
 def main():
     parser = argparse.ArgumentParser(description="Train CORE-LIP.")
-    parser.add_argument("--dataset", default="data/CLIP_dataset/TR1000_reduced.txt")
+    parser.add_argument("--dataset", default="data/CLIP_dataset/TR1000_max_1024.txt")
     parser.add_argument("--h5", default="data/protein_MD_properties.h5")
     parser.add_argument("--model", default="data/models/core_lip.pt")
     parser.add_argument("--epochs", type=int, default=250)

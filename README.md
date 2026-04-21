@@ -28,7 +28,7 @@ CORE-LIP/
 │   └── evaluate.py            # 5 – Benchmark against baselines
 │
 ├── data/
-│   ├── CLIP_dataset/          # TR1000.txt, TE440.txt (and *_reduced.txt after filtering)
+│   ├── CLIP_dataset/          # TR1000.txt, TE440.txt (and *_max_1024.txt after filtering)
 │   ├── conformational_ensemble/  # Per-protein folders with DCD/PDB trajectories
 │   ├── protein_MD_properties.h5  # Output of compute_properties.py
 │   ├── models/                # Saved model checkpoints
@@ -66,7 +66,7 @@ python scripts/compute_properties.py \
 
 ```bash
 python scripts/visualize_features.py \
-    --dataset  data/CLIP_dataset/TR1000_reduced.txt \
+    --dataset  data/CLIP_dataset/TR1000_max_1024.txt \
     --h5       data/protein_MD_properties.h5 \
     --output   results/feature_comparison_violin.pdf
 ```
@@ -75,7 +75,7 @@ python scripts/visualize_features.py \
 
 ```bash
 python scripts/train.py \
-    --dataset  data/CLIP_dataset/TR1000_reduced.txt \
+    --dataset  data/CLIP_dataset/TR1000_max_1024.txt \
     --h5       data/protein_MD_properties.h5 \
     --model    data/models/core_lip.pt \
     --epochs   250
@@ -87,8 +87,8 @@ python scripts/train.py \
 python scripts/predict.py \
     --model     data/models/core_lip.pt \
     --h5        data/protein_MD_properties.h5 \
-    --datasets  data/CLIP_dataset/TR1000_reduced.txt \
-               data/CLIP_dataset/TE440_reduced.txt \
+    --datasets  data/CLIP_dataset/TR1000_max_1024.txt \
+               data/CLIP_dataset/TE440_max_1024.txt \
     --output_dir data/predictions/
 ```
 
@@ -96,10 +96,10 @@ python scripts/predict.py \
 
 ```bash
 python scripts/evaluate.py \
-    --train_truth  data/CLIP_dataset/TR1000_reduced.txt \
-    --train_preds  data/predictions/core_lip_TR1000_reduced.csv \
-    --test_truth   data/CLIP_dataset/TE440_reduced.txt \
-    --test_preds   data/predictions/core_lip_TE440_reduced.csv \
+    --train_truth  data/CLIP_dataset/TR1000_max_1024.txt \
+    --train_preds  data/predictions/core_lip_TR1000_max_1024.csv \
+    --test_truth   data/CLIP_dataset/TE440_max_1024.txt \
+    --test_preds   data/predictions/core_lip_TE440_max_1024.csv \
     --output_dir   results/
 ```
 
