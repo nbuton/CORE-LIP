@@ -50,7 +50,14 @@ pip install -e .          # installs core_lip as an editable package
 
 ---
 
-## Quick start
+## Using CORE-LIP as a Prediction Tool
+TODO
+
+## Paper Reproduction Workflow
+### 0 - Preliminary Data Acquisition (Optional)
+
+If you wish to replicate the specific examples discussed in the paper, please download the full-atom conformational ensembles and other data from Zenodo:
+https://zenodo.org/records/xxxxxxx and place them into the data/ folder
 
 ### 1 — Compute conformational properties with EnsembleMDP library
 
