@@ -56,10 +56,12 @@ pip install -e .          # installs core_lip as an editable package
 
 ```bash
 python scripts/compute_properties.py \
-    --input_dir  data/conformational_ensemble/ \
+    --input_dir  data/conformational_ensemble/[CONFORMATION_ORIGIN]/ \
     --output_h5  data/protein_MD_properties.h5 \
     --workers    15
 ```
+
+CONFORMATION_ORIGIN can be IDPFold2 / CALVADOS3 or even STARLING
 
 
 ### 2 — Visualise feature distributions
