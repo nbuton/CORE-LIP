@@ -3,7 +3,7 @@
 **CO**nformational **R**epresentation **E**nsemble for **L**inear **I**nteraction **P**eptide prediction
 
 CORE-LIP predicts LIP propensity from an ensemble of protein conformations.
-It takes MD trajectories (or IDPFold2 backmapped predictions) as input, computes
+It takes full atom ensemble of conformation as input, computes
 structural and dynamical features, and feeds them into a multi-scale Transformer
 (`ProteinMultiScaleTransformer`) that jointly exploits sequence, per-residue local,
 global scalar, and pairwise conformational signals.
@@ -52,7 +52,7 @@ pip install -e .          # installs core_lip as an editable package
 
 ## Quick start
 
-### 1 — Compute conformational properties
+### 1 — Compute conformational properties with EnsembleMDP library
 
 ```bash
 python scripts/compute_properties.py \

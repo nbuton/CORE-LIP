@@ -1,7 +1,7 @@
 """
 CORE-LIP — Step 1: Compute conformational properties
 =====================================================
-Processes a folder of IDPFold2 backmapped predictions, converts trajectory
+Processes a folder of full atoms ensemble conformation, converts trajectory
 formats, and computes MD-derived features for each protein. Results are
 saved to a compressed HDF5 file.
 
@@ -28,7 +28,7 @@ import mdtraj as md
 import numpy as np
 from tqdm import tqdm
 
-from idpmdp.analysis.orchestrator import ProteinAnalyzer
+from EnsembleMDP.analysis.orchestrator import ProteinAnalyzer
 
 # Suppress noisy library warnings
 warnings.filterwarnings("ignore", module="MDAnalysis")
