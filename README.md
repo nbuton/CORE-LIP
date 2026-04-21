@@ -25,8 +25,7 @@ CORE-LIP/
 │   ├── visualize_features.py  # 2 – Compare LIP / non-LIP feature distributions
 │   ├── train.py               # 3 – Train the model
 │   ├── predict.py             # 4 – Generate per-residue predictions
-│   ├── evaluate.py            # 5 – Benchmark against baselines
-│   └── filter_dataset.py      #     Utility – filter dataset to available proteins
+│   └── evaluate.py            # 5 – Benchmark against baselines
 │
 ├── data/
 │   ├── CLIP_dataset/          # TR1000.txt, TE440.txt (and *_reduced.txt after filtering)
@@ -62,20 +61,8 @@ python scripts/compute_properties.py \
     --workers    15
 ```
 
-### 2 — Filter the dataset
 
-Keep only proteins for which features were successfully computed:
-
-```bash
-python scripts/filter_dataset.py \
-    --h5         data/protein_MD_properties.h5 \
-    --train_in   data/CLIP_dataset/TR1000.txt \
-    --train_out  data/CLIP_dataset/TR1000_reduced.txt \
-    --test_in    data/CLIP_dataset/TE440.txt \
-    --test_out   data/CLIP_dataset/TE440_reduced.txt
-```
-
-### 3 — Visualise feature distributions
+### 2 — Visualise feature distributions
 
 ```bash
 python scripts/visualize_features.py \
@@ -84,7 +71,7 @@ python scripts/visualize_features.py \
     --output   results/feature_comparison_violin.pdf
 ```
 
-### 4 — Train the model
+### 3 — Train the model
 
 ```bash
 python scripts/train.py \
@@ -94,7 +81,7 @@ python scripts/train.py \
     --epochs   250
 ```
 
-### 5 — Make predictions
+### 4 — Make predictions
 
 ```bash
 python scripts/predict.py \
@@ -105,7 +92,7 @@ python scripts/predict.py \
     --output_dir data/predictions/
 ```
 
-### 6 — Evaluate
+### 5 — Evaluate
 
 ```bash
 python scripts/evaluate.py \
