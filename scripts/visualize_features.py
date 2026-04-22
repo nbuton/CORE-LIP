@@ -15,6 +15,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -105,6 +106,7 @@ def load_feature_data(
     with h5py.File(h5_path, "r") as h5_data:
         for _, row in df.iterrows():
             pid = row["protein_id"]
+            logging.debug(f"PID:{pid}")
             local_feats = np.stack(
                 [h5_data[pid][f][()] for f in local_features], axis=0
             )

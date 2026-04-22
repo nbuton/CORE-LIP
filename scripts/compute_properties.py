@@ -109,18 +109,18 @@ def compute_properties(protein_dir: Path) -> dict:
 def process_single_protein(protein_dir: Path):
     """Worker: convert format + compute properties for one protein."""
     protein_id = protein_dir.stem
-    traj_path = protein_dir / "aa_traj.dcd"
+    traj_path_dcd = protein_dir / "aa_traj.dcd"
+    traj_path_xtc = protein_dir / "traj_AA.xtc"
 
-    if not traj_path.exists():
-        return None
+    if not traj_path_dcd.exists() and not traj_path_xtc.exists():
+        raise RuntimeError(
+            f"No trajectory file found inside this directory: {protein_dir}"
+        )
 
-    try:
+    if not traj_path_xtc.exists():
         convert_trajectory_format(protein_dir)
-        properties = compute_properties(protein_dir)
-        return protein_id, properties
-    except Exception as e:
-        print(f"[ERROR] {protein_id}: {e}")
-        return None
+    properties = compute_properties(protein_dir)
+    return protein_id, properties
 
 
 def save_properties_to_h5(dico_properties: dict, output_filepath: str) -> None:
@@ -188,6 +188,8 @@ def main():
         if res is not None:
             protein_id, properties = res
             dico_properties[protein_id] = properties
+        else:
+            logging.debug(f"Error for one res")
 
     args.output_h5.parent.mkdir(parents=True, exist_ok=True)
     save_properties_to_h5(dico_properties, str(args.output_h5))
@@ -195,4 +197,5 @@ def main():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s: %(message)s")
     main()
