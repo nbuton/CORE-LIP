@@ -1,0 +1,68 @@
+from pydantic import BaseModel, model_validator
+from typing import Tuple
+
+
+class ProteinModelConfig(BaseModel):
+    """Central configuration for all model hyperparameters."""
+
+    # ── Vocabulary / sequence ──────────────────────────────────────────────
+    vocab_size: int = 25
+    pad_token_id: int = 0
+
+    # ── Feature dimensions ────────────────────────────────────────────────
+    nb_scalar: int = 16
+    nb_local: int = 32
+    nb_pairwise: int = 8
+
+    # ── Embedding / model width ───────────────────────────────────────────
+    embed_dim: int = 128
+    max_seq_len: int = 1024
+
+    # ── Transformer blocks ────────────────────────────────────────────────
+    num_blocks: int = 4
+    num_heads: int = 8
+    ffn_expansion: int = 2
+    dropout: float = 0.1
+
+    # ── Pairwise CNN (inside each block) ──────────────────────────────────
+    pairwise_cnn_channels: int = 32
+    pairwise_cnn_kernel: int = 3
+    dilatations_cnn: Tuple[int, ...] = (1, 2, 3)
+
+    # ── Classification head ───────────────────────────────────────────────
+    num_classes: int = 2
+
+    # ── MLP hidden sizes (defaults derived from embed_dim) ────────────────
+    local_mlp_hidden: int = -1
+    scalar_mlp_hidden: int = -1
+
+    # ── Post-Initialization & Validation ──────────────────────────────────
+    @model_validator(mode="after")
+    def validate_and_set_defaults(self) -> "ProteinModelConfig":
+        # 1. Set dynamic defaults
+        if self.local_mlp_hidden < 0:
+            self.local_mlp_hidden = self.embed_dim
+        if self.scalar_mlp_hidden < 0:
+            self.scalar_mlp_hidden = self.embed_dim
+
+        # 2. Replicate your assertions as proper Pydantic validations
+        if self.embed_dim % 2 != 0:
+            raise ValueError("embed_dim must be even (pairwise windowing)")
+        if self.embed_dim % self.num_heads != 0:
+            raise ValueError("embed_dim must be divisible by num_heads")
+
+        return self
+
+
+class TrainingConfig(BaseModel):
+    epochs: int
+    batch_size: int
+    accumulation: int
+    lr: float
+    seed: int
+
+
+# You can now hook this up to your main config just like before:
+class FullConfig(BaseModel):
+    training: TrainingConfig  # (From the previous example)
+    model: ProteinModelConfig

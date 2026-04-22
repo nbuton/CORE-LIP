@@ -15,64 +15,13 @@ through a series of CNN-biased Transformer blocks.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
 from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
-# ---------------------------------------------------------------------------
-# 0.  Configuration
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ProteinModelConfig:
-    """Central configuration for all model hyperparameters."""
-
-    # ── Vocabulary / sequence ──────────────────────────────────────────────
-    vocab_size: int = 25  # number of amino-acid tokens (incl. special)
-    pad_token_id: int = 0
-
-    # ── Feature dimensions ────────────────────────────────────────────────
-    nb_scalar: int = 16  # number of scalar (per-protein) features
-    nb_local: int = 32  # number of local  (per-residue) features
-    nb_pairwise: int = 8  # number of pairwise feature channels
-
-    # ── Embedding / model width ───────────────────────────────────────────
-    embed_dim: int = 128  # E  — main hidden dimension
-    max_seq_len: int = 1024  # maximum protein length for positional emb
-
-    # ── Transformer blocks ────────────────────────────────────────────────
-    num_blocks: int = 4  # k  — number of Transformer blocks
-    num_heads: int = 8  # attention heads (embed_dim % num_heads == 0)
-    ffn_expansion: int = 2  # FFN hidden = embed_dim * ffn_expansion
-    dropout: float = 0.1
-
-    # ── Pairwise CNN (inside each block) ──────────────────────────────────
-    pairwise_cnn_channels: int = 32  # intermediate CNN channels
-    pairwise_cnn_kernel: int = 3  # spatial kernel for pairwise CNN
-    dilatations_cnn: tuple[int, ...] = (1, 2, 3)
-
-    # ── Classification head ───────────────────────────────────────────────
-    num_classes: int = 2
-
-    # ── MLP hidden sizes (defaults derived from embed_dim) ────────────────
-    local_mlp_hidden: int = field(default=-1)  # -1 → embed_dim
-    scalar_mlp_hidden: int = field(default=-1)  # -1 → embed_dim
-
-    def __post_init__(self):
-        if self.local_mlp_hidden < 0:
-            self.local_mlp_hidden = self.embed_dim
-        if self.scalar_mlp_hidden < 0:
-            self.scalar_mlp_hidden = self.embed_dim
-        assert self.embed_dim % 2 == 0, "embed_dim must be even (pairwise windowing)"
-        assert (
-            self.embed_dim % self.num_heads == 0
-        ), "embed_dim must be divisible by num_heads"
-
+from core_lip.config import ProteinModelConfig
 
 # ---------------------------------------------------------------------------
 # 1.  Small reusable primitives

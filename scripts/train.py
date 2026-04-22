@@ -40,6 +40,7 @@ from core_lip import (
     protein_label_from_residue_labels,
     read_protein_data,
 )
+from core_lip.config import FullConfig
 
 # ---------------------------------------------------------------------------
 # Feature configuration (edit here to change the feature set)
@@ -203,18 +204,25 @@ def select_threshold_cv(
     all_scores, all_labels = [], []
 
     with torch.no_grad():
-        for batch in loader:
-            scores = model(
-                batch["scalar"].to(device),
-                batch["local"].to(device),
-                batch["pairwise"].to(device),
-                batch["seq"].to(device),
-                batch["mask"].to(device),
-            )
-            probs = torch.softmax(scores, dim=-1)[..., 1]  # positive-class prob
-            for i, length in enumerate(batch["lengths"]):
-                all_scores.append(probs[i, :length].cpu().numpy())
-                all_labels.append(batch["labels"][i, :length].cpu().numpy())
+        for batch_idx, (x_scalar, x_local, x_pairwise, seq, mask, y) in tqdm(
+            enumerate(loader), total=len(loader)
+        ):
+            x_scalar = x_scalar.to(device)
+            x_local = x_local.to(device)
+            x_pairwise = x_pairwise.to(device)
+            tokens = seq.long().to(device)
+            mask = mask.to(device)
+            y = y.to(device)
+            lengths = mask.sum(dim=1).int().cpu().numpy()
+            logits = model(tokens, x_scalar, x_local, x_pairwise, mask)
+            probs = torch.softmax(logits, dim=-1)[..., 1]  # positive-class prob
+            safe_probs = probs.view(len(lengths), -1)
+            safe_labels = y.view(len(lengths), -1)
+            if probs.dim() == 1:
+                probs = probs.unsqueeze(0)
+            for i, length in enumerate(lengths):
+                all_scores.append(safe_probs[i, :length].detach().cpu().numpy())
+                all_labels.append(safe_labels[i, :length].detach().cpu().numpy())
 
     protein_ids = np.arange(len(all_scores))
     n_splits_eff = min(n_splits, len(protein_ids))
@@ -233,6 +241,13 @@ def select_threshold_cv(
     return float(candidate_thresholds[int(np.argmax(mean_mccs))])
 
 
+def get_config(yaml_path: str) -> FullConfig:
+    """Parses YAML and returns a validated FullConfig object."""
+    with open(yaml_path, "r") as f:
+        # Pydantic handles the nested dict conversion and type casting automatically
+        return FullConfig.model_validate(yaml.safe_load(f))
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -240,7 +255,12 @@ def select_threshold_cv(
 
 def main():
     parser = argparse.ArgumentParser(description="Train CORE-LIP.")
-    parser.add_argument("--config", required=True, help="Path to config.yaml")
+    parser.add_argument(
+        "--config",
+        required=True,
+        help="Path to config.yaml",
+        default="data/models/CORE_LIP_STARLING/config.yaml",
+    )
     parser.add_argument("--dataset", default="data/CLIP_dataset/TR1000_max_380.txt")
     parser.add_argument("--h5", default="data/STARLING_derived_properties.h5")
     parser.add_argument("--device", default="cpu")
@@ -250,15 +270,13 @@ def main():
     config_dir = os.path.dirname(os.path.abspath(args.config))
     model_save_path = os.path.join(config_dir, "core_lip.pt")
 
-    # ── Load YAML ──────────────────────────────────────────────────────────────
-    with open(args.config) as f:
-        cfg_dict = yaml.safe_load(f)
+    # ── Load YAML (Now returns a FullConfig object) ───────────────────────────
+    cfg = get_config(args.config)
+    train_cfg = cfg.training
+    model_cfg = cfg.model
 
-    train_cfg = cfg_dict["training"]
-    model_cfg = cfg_dict["model"]
-
-    # ── Reproducibility ────────────────────────────────────────────────────────
-    set_seed(train_cfg["seed"])
+    # ── Reproducibility (Changed to dot notation) ──────────────────────────────
+    set_seed(train_cfg.seed)
     device = torch.device(args.device)
 
     print(f"Config:  {args.config}")
@@ -285,16 +303,17 @@ def main():
         dataset, indices[split:].tolist() or indices[:1].tolist()
     )
 
+    # ── Loaders (Changed to dot notation) ──────────────────────────────────────
     train_loader = DataLoader(
         train_subset,
-        batch_size=train_cfg["batch_size"],
+        batch_size=train_cfg.batch_size,
         shuffle=True,
         num_workers=0,
         collate_fn=collate_proteins,
     )
     val_loader = DataLoader(
         val_subset,
-        batch_size=train_cfg["batch_size"],
+        batch_size=train_cfg.batch_size,
         shuffle=False,
         num_workers=0,
         collate_fn=collate_proteins,
@@ -303,39 +322,33 @@ def main():
     # ── Model ──────────────────────────────────────────────────────────────────
     num_classes = int(np.unique(np.asarray(y_prot)).size)
 
-    cfg = ProteinModelConfig(
-        vocab_size=model_cfg["vocab_size"],
-        nb_scalar=len(SCALAR_FEATURES),
-        nb_local=len(LOCAL_FEATURES),
-        nb_pairwise=len(PAIRWISE_FEATURES),
-        embed_dim=model_cfg["embed_dim"],
-        num_blocks=model_cfg["num_blocks"],
-        num_heads=model_cfg["num_heads"],
-        ffn_expansion=model_cfg["ffn_expansion"],
-        dropout=model_cfg["dropout"],
-        pairwise_cnn_channels=model_cfg["pairwise_cnn_channels"],
-        pairwise_cnn_kernel=model_cfg["pairwise_cnn_kernel"],
-        dilatations_cnn=tuple(model_cfg["dilatations_cnn"]),
-        max_seq_len=model_cfg["max_seq_len"],
-        num_classes=num_classes,
-    )
-    model = ProteinMultiScaleTransformer(cfg).to(device)
+    # ── Dynamic Config Update ──────────────────────────────────────────────────
+    # Update the Pydantic object field directly
+    model_cfg.num_classes = num_classes
+    model_cfg.nb_scalar = len(SCALAR_FEATURES)
+    model_cfg.nb_local = len(LOCAL_FEATURES)
+    model_cfg.nb_pairwise = len(PAIRWISE_FEATURES)
+
+    # Pass the validated object to the model
+    model = ProteinMultiScaleTransformer(model_cfg).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params / 1e6:.2f} M")
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=train_cfg["lr"])
+    # Changed to dot notation
+    optimizer = torch.optim.Adam(model.parameters(), lr=train_cfg.lr)
 
     best_val_loss = float("inf")
 
-    for epoch in range(1, train_cfg["epochs"] + 1):
+    # ── Training Loop (Changed to dot notation) ────────────────────────────────
+    for epoch in range(1, train_cfg.epochs + 1):
         train_loss = train_one_epoch(
             model,
             train_loader,
             optimizer,
             criterion,
-            train_cfg["accumulation"],
+            train_cfg.accumulation,
             device,
         )
         val_loss, val_acc, val_auc = evaluate(model, val_loader, device)
@@ -349,7 +362,7 @@ def main():
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
-                    "cfg": cfg,
+                    "cfg": model_cfg,
                     "scalar_features": SCALAR_FEATURES,
                     "local_features": LOCAL_FEATURES,
                     "pairwise_features": PAIRWISE_FEATURES,
@@ -359,12 +372,12 @@ def main():
             )
             print(f"  ✓ Checkpoint saved → {model_save_path}")
 
-    print(f"\nTraining complete. Best val loss: {best_val_loss:.6f}")
-
-    # ── Threshold selection on training set (5-fold CV, MCC) ──────────────────
-    checkpoint = torch.load(model_save_path, map_location=device)
+    # ── Threshold selection ───────────────────────────────────────────────────
+    checkpoint = torch.load(model_save_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
-    best_thr = select_threshold_cv(model, train_loader, device, seed=train_cfg["seed"])
+
+    # Changed to dot notation
+    best_thr = select_threshold_cv(model, train_loader, device, seed=train_cfg.seed)
     print(f"Best threshold (CV-MCC): {best_thr:.6f}")
 
     checkpoint["best_threshold"] = best_thr

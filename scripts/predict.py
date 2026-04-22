@@ -65,7 +65,7 @@ def predict_dataset(
         collate_fn=collate_inference,
     )
 
-    best_thr = checkpoint["best_thr"]
+    best_thr = checkpoint["best_threshold"]
 
     model.eval()
     rows = []

@@ -114,7 +114,7 @@ python scripts/compute_properties.py \
 
 ```bash
 python scripts/visualize_features.py \
-    --dataset  data/CLIP_dataset/TR1000_max_380.txt \
+    --dataset  data/CLIP_dataset/TR1000_less_than_380.txt \
     --h5       data/properties/STARLING_derived_properties.h5 \
     --output   results/feature_comparison_violin.pdf
 ```
@@ -125,8 +125,8 @@ This create a violin plot with all the features with the name results/{dataset_s
 ```bash
 python scripts/train.py \
     --config  data/models/CORE_LIP_STARLING/config.yaml \
-    --dataset data/CLIP_dataset/TR1000_max_380.txt \
-    --h5       data/properties/STARLING_derived_properties.h5 \
+    --dataset data/CLIP_dataset/TR1000_less_than_380.txt \
+    --h5      data/properties/STARLING_derived_properties.h5 \
     --device   cpu
 ```
 
@@ -134,10 +134,9 @@ python scripts/train.py \
 
 ```bash
 python scripts/predict.py \
-    --model     data/models/core_lip.pt \
-    --h5        data/protein_MD_properties.h5 \
-    --datasets  data/CLIP_dataset/TR1000_max_1024.txt \
-               data/CLIP_dataset/TE440_max_1024.txt \
+    --model     data/models/CORE_LIP_STARLING/core_lip.pt \
+    --h5        data/properties/STARLING_derived_properties.h5 \
+    --datasets  data/CLIP_dataset/TE440_less_than_380.txt \
     --output_dir data/predictions/
 ```
 
@@ -145,16 +144,13 @@ python scripts/predict.py \
 
 ```bash
 python scripts/evaluate.py \
-    --test_truth  data/CLIP_dataset/TE440_max_1024.txt \
-    --pred_files  data/predictions/core_lip_v1_TE440.csv \
-                  data/predictions/core_lip_v2_TE440.csv \
-                  data/predictions/clip_TE440.csv \
-    --names       "CORE-LIP v1" "CORE-LIP v2" CLIP \
+    --test_truth  data/CLIP_dataset/TE440_less_than_380.txt \
+    --pred_files  data/predictions/core_lip_TE440_less_than_380.csv \
+                  data/predictions/CLIP_TE440.csv \
+                  data/predictions/MoRFchibi_TE440.csv \
+    --names       "CORE-LIP STARLING v1" CLIP MoRFchibi \
     --output_dir  results/
 ```
-
-To add a comparison model (e.g. CLIP), pass `--clip_preds data/predictions/CLIP_TE440.txt`.
-Additional baselines can be declared inside `evaluate.py` using the `ComparisonModel` dataclass.
 
 ---
 

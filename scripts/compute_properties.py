@@ -106,7 +106,7 @@ def compute_properties(protein_dir: Path) -> dict:
             scaling_min_sep=5,
         )
     except:
-        RuntimeError(f"Error in computing properties of protein: {protein_dir}")
+        raise RuntimeError(f"Error in computing properties of protein: {protein_dir}")
 
 
 def process_single_protein(protein_dir: Path):
@@ -123,6 +123,8 @@ def process_single_protein(protein_dir: Path):
     if not traj_path_xtc.exists():
         convert_trajectory_format(protein_dir)
     properties = compute_properties(protein_dir)
+    if properties is None:
+        raise RuntimeError(f"For {protein_dir} the properties was None...")
     return protein_id, properties
 
 
@@ -169,6 +171,7 @@ def main():
     args = parser.parse_args()
 
     directories = [d for d in args.input_dir.iterdir() if d.is_dir()]
+
     print(f"Found {len(directories)} protein directories.")
     print(f"Starting parallel processing with {args.workers} workers …")
 

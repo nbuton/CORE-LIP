@@ -28,7 +28,10 @@ import matplotlib.ticker as mticker
 import numpy as np
 from matplotlib.lines import Line2D
 from sklearn.metrics import f1_score, matthews_corrcoef, roc_auc_score, roc_curve
+import csv
+import sys
 
+csv.field_size_limit(sys.maxsize)
 
 # ---------------------------------------------------------------------------
 # Data structures
