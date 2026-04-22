@@ -103,30 +103,31 @@ https://zenodo.org/records/xxxxxxx and place them into the data/ folder
 ```bash
 python scripts/compute_properties.py \
     --input_dir  data/conformational_ensemble/[CONFORMATION_ORIGIN]/ \
-    --output_h5  data/protein_MD_properties.h5 \
     --workers    15
 ```
 
-CONFORMATION_ORIGIN can be IDPFold2 / CALVADOS3 or even STARLING
+- CONFORMATION_ORIGIN can be IDPFold2 / CALVADOS3 or even STARLING   
+- The output will be inside data/properties/[CONFORMATION_ORIGIN]_derived_properties.h5
 
 
 ### 2 — Visualise feature distributions
 
 ```bash
 python scripts/visualize_features.py \
-    --dataset  data/CLIP_dataset/TR1000_max_1024.txt \
-    --h5       data/protein_MD_properties.h5 \
+    --dataset  data/CLIP_dataset/TR1000_max_380.txt \
+    --h5       data/properties/STARLING_derived_properties.h5 \
     --output   results/feature_comparison_violin.pdf
 ```
+This create a violin plot with all the features with the name results/{dataset_stem}_{h5_stem}_feature_comparison_violin.pdf
 
 ### 3 — Train the model
 
 ```bash
 python scripts/train.py \
-    --dataset  data/CLIP_dataset/TR1000_max_1024.txt \
-    --h5       data/protein_MD_properties.h5 \
-    --model    data/models/core_lip.pt \
-    --epochs   250
+    --config  data/models/CORE_LIP_STARLING/config.yaml \
+    --dataset data/CLIP_dataset/TR1000_max_380.txt \
+    --h5       data/properties/STARLING_derived_properties.h5 \
+    --device   cpu
 ```
 
 ### 4 — Make predictions
@@ -144,11 +145,12 @@ python scripts/predict.py \
 
 ```bash
 python scripts/evaluate.py \
-    --train_truth  data/CLIP_dataset/TR1000_max_1024.txt \
-    --train_preds  data/predictions/core_lip_TR1000_max_1024.csv \
-    --test_truth   data/CLIP_dataset/TE440_max_1024.txt \
-    --test_preds   data/predictions/core_lip_TE440_max_1024.csv \
-    --output_dir   results/
+    --test_truth  data/CLIP_dataset/TE440_max_1024.txt \
+    --pred_files  data/predictions/core_lip_v1_TE440.csv \
+                  data/predictions/core_lip_v2_TE440.csv \
+                  data/predictions/clip_TE440.csv \
+    --names       "CORE-LIP v1" "CORE-LIP v2" CLIP \
+    --output_dir  results/
 ```
 
 To add a comparison model (e.g. CLIP), pass `--clip_preds data/predictions/CLIP_TE440.txt`.

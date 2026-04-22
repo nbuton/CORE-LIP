@@ -1,34 +1,33 @@
 """
 CORE-LIP — Step 5: Evaluate predictions
 =========================================
-Evaluates CORE-LIP against baseline models on a held-out test set.
-Threshold selection uses 5-fold cross-validation on the training set (MCC),
-exactly as in the CLIP benchmarking protocol.
+Evaluates one or more models on a held-out test set.
+All prediction files must follow the CSV format produced by predict.py:
+    protein_id, length, predictions, binary_predictions [, extra columns ignored]
 
 Usage
 -----
     python scripts/evaluate.py \
-        --train_truth  data/CLIP_dataset/TR1000_max_1024.txt \
-        --train_preds  data/predictions/core_lip_TR1000_max_1024.csv \
-        --test_truth   data/CLIP_dataset/TE440_max_1024.txt \
-        --test_preds   data/predictions/core_lip_TE440_max_1024.csv \
-        --output_dir   results/
+        --test_truth  data/CLIP_dataset/TE440_max_1024.txt \
+        --pred_files  data/predictions/core_lip_TE440.csv \
+                      data/predictions/clip_TE440.csv \
+                      data/predictions/idplip_TE440.csv \
+        --names       CORE-LIP CLIP IDP-LIP \
+        --output_dir  results/
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 from matplotlib.lines import Line2D
 from sklearn.metrics import f1_score, matthews_corrcoef, roc_auc_score, roc_curve
-from sklearn.model_selection import KFold
 
 
 # ---------------------------------------------------------------------------
@@ -36,39 +35,25 @@ from sklearn.model_selection import KFold
 # ---------------------------------------------------------------------------
 
 
-@dataclass
 class ResidueExample:
-    protein_id: str
-    sequence: str
-    y_true: np.ndarray
-    predictions: Dict[str, np.ndarray] = field(default_factory=dict)
+    def __init__(self, protein_id: str, sequence: str, y_true: np.ndarray):
+        self.protein_id = protein_id
+        self.sequence = sequence
+        self.y_true = y_true
+        self.predictions: Dict[str, np.ndarray] = {}  # continuous scores
+        self.binary_preds: Dict[str, np.ndarray] = {}  # binary labels
 
-    def add_prediction(self, model_name: str, scores: np.ndarray) -> None:
-        if len(scores) != len(self.sequence):
-            raise ValueError(
-                f"Length mismatch for {self.protein_id} / {model_name}: "
-                f"seq={len(self.sequence)}, pred={len(scores)}"
-            )
+    def add_prediction(
+        self, model_name: str, scores: np.ndarray, binary: np.ndarray
+    ) -> None:
+        for arr, label in [(scores, "scores"), (binary, "binary")]:
+            if len(arr) != len(self.sequence):
+                raise ValueError(
+                    f"Length mismatch for {self.protein_id} / {model_name} "
+                    f"({label}): seq={len(self.sequence)}, pred={len(arr)}"
+                )
         self.predictions[model_name] = scores
-
-
-@dataclass
-class ComparisonModel:
-    """
-    Describes an external baseline model to include in the benchmark.
-
-    Example
-    -------
-    >>> baselines = [
-    ...     ComparisonModel("CLIP",    "data/predictions/CLIP_TE440.txt",    parse_clip_predictions, 0.20),
-    ...     ComparisonModel("IDP-LIP", "data/predictions/IDPLIP_TE440.txt",  parse_clip_predictions, 0.35),
-    ... ]
-    """
-
-    name: str
-    prediction_file: str | Path
-    parser: Callable[[str | Path], Dict[str, np.ndarray]]
-    threshold: float
+        self.binary_preds[model_name] = binary
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +90,13 @@ def _parse_prob_string(s: str) -> np.ndarray:
     return np.array([float(x) for x in s.split(",") if x != ""], dtype=np.float64)
 
 
+def _parse_binary_csv_string(s: str) -> np.ndarray:
+    s = s.strip().strip('"')
+    if not s:
+        return np.array([], dtype=np.int8)
+    return np.array([int(x) for x in s.split(",") if x != ""], dtype=np.int8)
+
+
 def parse_truth_file(path: str | Path) -> Dict[str, ResidueExample]:
     records: Dict[str, ResidueExample] = {}
     for block in _read_blocks(path):
@@ -119,122 +111,72 @@ def parse_truth_file(path: str | Path) -> Dict[str, ResidueExample]:
     return records
 
 
-def parse_clip_predictions(path: str | Path) -> Dict[str, np.ndarray]:
-    """Parse CLIP-format prediction files (FASTA-like with probability lines)."""
-    preds: Dict[str, np.ndarray] = {}
-    for block in _read_blocks(path):
-        if len(block) < 3:
-            raise ValueError(f"Malformed CLIP prediction block: {block}")
-        protein_id = block[0][1:].strip()
-        prob_lines = [line for line in block[2:] if "," in line]
-        if not prob_lines:
-            raise ValueError(f"No probability line found for {protein_id}")
-        preds[protein_id] = _parse_prob_string(",".join(prob_lines))
-    return preds
-
-
-def parse_core_lip_csv(path: str | Path) -> Dict[str, np.ndarray]:
-    """Parse CORE-LIP CSV prediction files (columns: protein_id, length, predictions)."""
-    preds: Dict[str, np.ndarray] = {}
+def parse_prediction_csv(
+    path: str | Path,
+    records: Dict[str, ResidueExample],
+    model_name: str,
+) -> None:
+    """
+    Parse a prediction CSV (protein_id, length, predictions, binary_predictions).
+    Extra columns are silently ignored.
+    Only proteins present in *records* are loaded; others are silently skipped.
+    """
+    required = {"protein_id", "length", "predictions", "binary_predictions"}
     with open(path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
-        required = {"protein_id", "length", "predictions"}
         if not required.issubset(set(reader.fieldnames or [])):
             raise ValueError(
                 f"CSV must contain columns {sorted(required)}; got {reader.fieldnames}"
             )
+        missing = []
         for row in reader:
-            protein_id = row["protein_id"].strip()
+            pid = row["protein_id"].strip()
+            if pid not in records:
+                continue  # extra protein — ignore
             expected_len = int(row["length"])
             scores = _parse_prob_string(row["predictions"])
-            if len(scores) != expected_len:
-                raise ValueError(f"Length mismatch for {protein_id}")
-            preds[protein_id] = scores
-    return preds
+            binary = _parse_binary_csv_string(row["binary_predictions"])
+            if len(scores) != expected_len or len(binary) != expected_len:
+                raise ValueError(
+                    f"Length mismatch for {pid} in {path}: "
+                    f"expected {expected_len}, got scores={len(scores)}, binary={len(binary)}"
+                )
+            records[pid].add_prediction(model_name, scores, binary)
+
+    # Report proteins in truth file that had no prediction
+    missing = [pid for pid in records if model_name not in records[pid].predictions]
+    if missing:
+        raise ValueError(
+            f"Model '{model_name}' is missing predictions for "
+            f"{len(missing)} protein(s): {missing[:5]}{'...' if len(missing) > 5 else ''}"
+        )
 
 
 # ---------------------------------------------------------------------------
-# Evaluation helpers
+# Metrics
 # ---------------------------------------------------------------------------
-
-
-def attach_predictions(
-    records: Dict[str, ResidueExample],
-    preds: Dict[str, np.ndarray],
-    model_name: str,
-) -> None:
-    for pid in records:
-        if pid not in preds:
-            raise ValueError(
-                f"Missing prediction for protein '{pid}' in model '{model_name}'"
-            )
-        records[pid].add_prediction(model_name, preds[pid])
-
-
-def select_threshold_cv(
-    records: Dict[str, ResidueExample],
-    model_name: str,
-    n_splits: int = 5,
-    random_state: int = 0,
-) -> Tuple[float, List[Tuple[float, float]]]:
-    """
-    Select the decision threshold that maximises mean MCC in 5-fold CV
-    (protein-level folds), matching the CLIP benchmarking protocol.
-    """
-    protein_ids = np.array(
-        [pid for pid, rec in records.items() if model_name in rec.predictions]
-    )
-    if len(protein_ids) < 2:
-        raise ValueError(f"Need ≥ 2 proteins for CV; got {len(protein_ids)}")
-
-    n_splits_eff = min(n_splits, len(protein_ids))
-    kf = KFold(n_splits=n_splits_eff, shuffle=True, random_state=random_state)
-
-    all_scores = np.concatenate(
-        [records[pid].predictions[model_name] for pid in protein_ids]
-    )
-    candidate_thresholds = np.sort(np.unique(all_scores))
-
-    mean_mccs = []
-    for thr in candidate_thresholds:
-        fold_mccs = []
-        for _, val_idx in kf.split(protein_ids):
-            val_ids = protein_ids[val_idx]
-            y_true = np.concatenate([records[pid].y_true for pid in val_ids])
-            y_score = np.concatenate(
-                [records[pid].predictions[model_name] for pid in val_ids]
-            )
-            y_pred = (y_score > thr).astype(np.int8)
-            fold_mccs.append(matthews_corrcoef(y_true, y_pred))
-        mean_mccs.append(float(np.mean(fold_mccs)))
-
-    best_idx = int(np.argmax(mean_mccs))
-    return float(candidate_thresholds[best_idx]), list(
-        zip(candidate_thresholds.tolist(), mean_mccs)
-    )
 
 
 def compute_metrics(
     records: Dict[str, ResidueExample],
     model_name: str,
-    threshold: float,
 ) -> Dict:
-    y_true_all, y_score_all = [], []
+    y_true_all, y_score_all, y_pred_all = [], [], []
     for rec in records.values():
         if model_name in rec.predictions:
             y_true_all.append(rec.y_true.astype(np.int8))
             y_score_all.append(rec.predictions[model_name].astype(np.float64))
+            y_pred_all.append(rec.binary_preds[model_name].astype(np.int8))
 
     if not y_true_all:
         raise ValueError(f"No predictions found for model '{model_name}'")
 
     y_true = np.concatenate(y_true_all)
     y_score = np.concatenate(y_score_all)
-    y_pred = (y_score > threshold).astype(np.int8)
+    y_pred = np.concatenate(y_pred_all)
 
-    out = {
+    out: Dict = {
         "model": model_name,
-        "threshold": float(threshold),
         "n_residues": int(len(y_true)),
         "mcc": float(matthews_corrcoef(y_true, y_pred)),
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
@@ -252,11 +194,10 @@ def compute_metrics(
 
 
 def print_results_table(results: List[Dict]) -> None:
-    headers = ["model", "threshold", "n_residues", "mcc", "f1", "auc_roc"]
+    headers = ["model", "n_residues", "mcc", "f1", "auc_roc"]
     rows = [
         [
             str(r["model"]),
-            f'{r["threshold"]:.6f}',
             str(int(r["n_residues"])),
             f'{r["mcc"]:.4f}',
             f'{r["f1"]:.4f}',
@@ -303,7 +244,7 @@ def plot_roc_curves(
 
     for i, name in enumerate(model_names):
         color = _PALETTE[i % len(_PALETTE)]
-        lw = 2.2 if name == "CORE-LIP" else 1.6
+        lw = 2.2 if i == 0 else 1.6
         try:
             yt = np.concatenate(
                 [
@@ -405,64 +346,52 @@ def plot_metrics_bar(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate CORE-LIP predictions.")
+    parser = argparse.ArgumentParser(description="Evaluate prediction CSV files.")
     parser.add_argument(
-        "--train_truth", default="data/CLIP_dataset/TR1000_max_1024.txt"
+        "--test_truth",
+        required=True,
+        help="Ground-truth file in FASTA-like format (header / sequence / binary label).",
     )
     parser.add_argument(
-        "--train_preds", default="data/predictions/core_lip_TR1000_max_1024.csv"
+        "--pred_files",
+        nargs="+",
+        required=True,
+        help="Prediction CSV files (one per model), in the same order as --names.",
     )
-    parser.add_argument("--test_truth", default="data/CLIP_dataset/TE440_max_1024.txt")
     parser.add_argument(
-        "--test_preds", default="data/predictions/core_lip_TE440_max_1024.csv"
-    )
-    parser.add_argument(
-        "--clip_preds",
-        default=None,
-        help="Optional: path to CLIP predictions for comparison.",
+        "--names",
+        nargs="+",
+        required=True,
+        help="Display name for each prediction file, in the same order as --pred_files.",
     )
     parser.add_argument("--output_dir", default="results/")
     args = parser.parse_args()
 
+    if len(args.pred_files) != len(args.names):
+        parser.error(
+            f"--pred_files ({len(args.pred_files)}) and --names ({len(args.names)}) "
+            "must have the same number of entries."
+        )
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step 1 — Tune threshold on training set
-    print("=== Threshold tuning (5-fold CV on training set) ===")
-    train_records = parse_truth_file(args.train_truth)
-    attach_predictions(train_records, parse_core_lip_csv(args.train_preds), "CORE-LIP")
-    best_thr, tuning = select_threshold_cv(train_records, "CORE-LIP")
-    print(f"Best threshold: {best_thr:.6f}")
-
-    # Step 2 — Declare baselines
-    baselines: List[ComparisonModel] = []
-    if args.clip_preds:
-        baselines.append(
-            ComparisonModel(
-                name="CLIP",
-                prediction_file=args.clip_preds,
-                parser=parse_clip_predictions,
-                threshold=0.20,
-            )
-        )
-    # Add more baselines here as needed
-
-    # Step 3 — Evaluate on test set
-    print("\n=== Test-set evaluation ===")
+    # Load ground truth
     test_records = parse_truth_file(args.test_truth)
+    print(f"Loaded {len(test_records)} proteins from {args.test_truth}")
+
+    # Load predictions and compute metrics
     all_results = []
+    for pred_file, name in zip(args.pred_files, args.names):
+        print(f"Loading predictions for '{name}' from {pred_file} …")
+        parse_prediction_csv(pred_file, test_records, name)
+        all_results.append(compute_metrics(test_records, name))
 
-    for bm in baselines:
-        preds = bm.parser(bm.prediction_file)
-        attach_predictions(test_records, preds, bm.name)
-        all_results.append(compute_metrics(test_records, bm.name, bm.threshold))
-
-    attach_predictions(test_records, parse_core_lip_csv(args.test_preds), "CORE-LIP")
-    all_results.append(compute_metrics(test_records, "CORE-LIP", best_thr))
-
+    # Print table
+    print("\n=== Test-set evaluation ===")
     print_results_table(all_results)
 
-    # Step 4 — Figures
+    # Figures
     model_names = [r["model"] for r in all_results]
     plot_roc_curves(
         test_records,

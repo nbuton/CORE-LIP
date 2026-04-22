@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import yaml
 import random
 from pathlib import Path
 
@@ -25,7 +26,8 @@ import h5py
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, matthews_corrcoef
+from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -185,6 +187,52 @@ def train_one_epoch(
     return total_loss / max(total, 1)
 
 
+def select_threshold_cv(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    seed: int = 0,
+    n_splits: int = 5,
+) -> float:
+    """
+    Collect residue-level positive-class probabilities over *loader*, then
+    pick the decision threshold that maximises mean MCC in n_splits-fold CV
+    (protein-level folds), matching the CLIP benchmarking protocol.
+    """
+    model.eval()
+    all_scores, all_labels = [], []
+
+    with torch.no_grad():
+        for batch in loader:
+            scores = model(
+                batch["scalar"].to(device),
+                batch["local"].to(device),
+                batch["pairwise"].to(device),
+                batch["seq"].to(device),
+                batch["mask"].to(device),
+            )
+            probs = torch.softmax(scores, dim=-1)[..., 1]  # positive-class prob
+            for i, length in enumerate(batch["lengths"]):
+                all_scores.append(probs[i, :length].cpu().numpy())
+                all_labels.append(batch["labels"][i, :length].cpu().numpy())
+
+    protein_ids = np.arange(len(all_scores))
+    n_splits_eff = min(n_splits, len(protein_ids))
+    kf = KFold(n_splits=n_splits_eff, shuffle=True, random_state=seed)
+
+    candidate_thresholds = np.sort(np.unique(np.concatenate(all_scores)))
+    mean_mccs = []
+    for thr in candidate_thresholds:
+        fold_mccs = []
+        for _, val_idx in kf.split(protein_ids):
+            y_true = np.concatenate([all_labels[i] for i in val_idx])
+            y_score = np.concatenate([all_scores[i] for i in val_idx])
+            fold_mccs.append(matthews_corrcoef(y_true, (y_score > thr).astype(np.int8)))
+        mean_mccs.append(float(np.mean(fold_mccs)))
+
+    return float(candidate_thresholds[int(np.argmax(mean_mccs))])
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -192,24 +240,33 @@ def train_one_epoch(
 
 def main():
     parser = argparse.ArgumentParser(description="Train CORE-LIP.")
-    parser.add_argument("--dataset", default="data/CLIP_dataset/TR1000_max_1024.txt")
-    parser.add_argument("--h5", default="data/protein_MD_properties.h5")
-    parser.add_argument("--model", default="data/models/core_lip.pt")
-    parser.add_argument("--epochs", type=int, default=250)
-    parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--accumulation", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--config", required=True, help="Path to config.yaml")
+    parser.add_argument("--dataset", default="data/CLIP_dataset/TR1000_max_380.txt")
+    parser.add_argument("--h5", default="data/STARLING_derived_properties.h5")
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    set_seed(args.seed)
+    # ── Define the saving path for the model ───────────────────────────────────
+    config_dir = os.path.dirname(os.path.abspath(args.config))
+    model_save_path = os.path.join(config_dir, "core_lip.pt")
+
+    # ── Load YAML ──────────────────────────────────────────────────────────────
+    with open(args.config) as f:
+        cfg_dict = yaml.safe_load(f)
+
+    train_cfg = cfg_dict["training"]
+    model_cfg = cfg_dict["model"]
+
+    # ── Reproducibility ────────────────────────────────────────────────────────
+    set_seed(train_cfg["seed"])
     device = torch.device(args.device)
 
+    print(f"Config:  {args.config}")
     print(f"Dataset: {args.dataset}")
     print(f"H5:      {args.h5}")
     print(f"Device:  {device}")
 
+    # ── Data ───────────────────────────────────────────────────────────────────
     with h5py.File(args.h5, "r") as h5:
         df = read_protein_data(args.dataset)
         X_scalar, X_local, X_pairwise, seqs, y_list, ids = prepare_data(
@@ -222,6 +279,7 @@ def main():
     n = len(dataset)
     indices = np.random.permutation(n)
     split = max(1, int(0.9 * n))
+
     train_subset = torch.utils.data.Subset(dataset, indices[:split].tolist())
     val_subset = torch.utils.data.Subset(
         dataset, indices[split:].tolist() or indices[:1].tolist()
@@ -229,53 +287,55 @@ def main():
 
     train_loader = DataLoader(
         train_subset,
-        batch_size=args.batch_size,
+        batch_size=train_cfg["batch_size"],
         shuffle=True,
         num_workers=0,
         collate_fn=collate_proteins,
     )
     val_loader = DataLoader(
         val_subset,
-        batch_size=args.batch_size,
+        batch_size=train_cfg["batch_size"],
         shuffle=False,
         num_workers=0,
         collate_fn=collate_proteins,
     )
 
+    # ── Model ──────────────────────────────────────────────────────────────────
     num_classes = int(np.unique(np.asarray(y_prot)).size)
+
     cfg = ProteinModelConfig(
-        vocab_size=25,
+        vocab_size=model_cfg["vocab_size"],
         nb_scalar=len(SCALAR_FEATURES),
         nb_local=len(LOCAL_FEATURES),
         nb_pairwise=len(PAIRWISE_FEATURES),
-        embed_dim=2048,
-        num_blocks=2,
-        num_heads=4,
-        ffn_expansion=4,
-        dropout=0.1,
-        pairwise_cnn_channels=3,
-        pairwise_cnn_kernel=3,
-        dilatations_cnn=(1, 2, 3),
-        max_seq_len=1024,
+        embed_dim=model_cfg["embed_dim"],
+        num_blocks=model_cfg["num_blocks"],
+        num_heads=model_cfg["num_heads"],
+        ffn_expansion=model_cfg["ffn_expansion"],
+        dropout=model_cfg["dropout"],
+        pairwise_cnn_channels=model_cfg["pairwise_cnn_channels"],
+        pairwise_cnn_kernel=model_cfg["pairwise_cnn_kernel"],
+        dilatations_cnn=tuple(model_cfg["dilatations_cnn"]),
+        max_seq_len=model_cfg["max_seq_len"],
         num_classes=num_classes,
     )
     model = ProteinMultiScaleTransformer(cfg).to(device)
+
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params / 1e6:.2f} M")
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=train_cfg["lr"])
 
     best_val_loss = float("inf")
-    Path(args.model).parent.mkdir(parents=True, exist_ok=True)
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, train_cfg["epochs"] + 1):
         train_loss = train_one_epoch(
             model,
             train_loader,
             optimizer,
             criterion,
-            args.accumulation,
+            train_cfg["accumulation"],
             device,
         )
         val_loss, val_acc, val_auc = evaluate(model, val_loader, device)
@@ -295,9 +355,21 @@ def main():
                     "pairwise_features": PAIRWISE_FEATURES,
                     "best_val_loss": best_val_loss,
                 },
-                args.model,
+                model_save_path,
             )
-            print(f"  ✓ Checkpoint saved → {args.model}")
+            print(f"  ✓ Checkpoint saved → {model_save_path}")
+
+    print(f"\nTraining complete. Best val loss: {best_val_loss:.6f}")
+
+    # ── Threshold selection on training set (5-fold CV, MCC) ──────────────────
+    checkpoint = torch.load(model_save_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    best_thr = select_threshold_cv(model, train_loader, device, seed=train_cfg["seed"])
+    print(f"Best threshold (CV-MCC): {best_thr:.6f}")
+
+    checkpoint["best_threshold"] = best_thr
+    torch.save(checkpoint, model_save_path)
+    print(f"  ✓ Checkpoint updated with threshold → {model_save_path}")
 
     print(f"\nTraining complete. Best val loss: {best_val_loss:.6f}")
 

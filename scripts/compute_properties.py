@@ -98,12 +98,15 @@ def compute_properties(protein_dir: Path) -> dict:
     """Run ProteinAnalyzer on a converted protein directory."""
     pdb_path = protein_dir / "top_AA.pdb"
     xtc_path = protein_dir / "traj_AA.xtc"
-    analyzer = ProteinAnalyzer(pdb_path, xtc_path)
-    return analyzer.compute_all(
-        sasa_n_sphere=1600,
-        contact_cutoff=8.0,
-        scaling_min_sep=5,
-    )
+    try:
+        analyzer = ProteinAnalyzer(pdb_path, xtc_path)
+        return analyzer.compute_all(
+            sasa_n_sphere=1600,
+            contact_cutoff=8.0,
+            scaling_min_sep=5,
+        )
+    except:
+        RuntimeError(f"Error in computing properties of protein: {protein_dir}")
 
 
 def process_single_protein(protein_dir: Path):
@@ -158,12 +161,6 @@ def main():
         help="Directory containing per-protein subdirectories with DCD/PDB trajectories.",
     )
     parser.add_argument(
-        "--output_h5",
-        type=Path,
-        default=Path("data/protein_MD_properties.h5"),
-        help="Path for the output HDF5 feature file.",
-    )
-    parser.add_argument(
         "--workers",
         type=int,
         default=15,
@@ -191,9 +188,13 @@ def main():
         else:
             logging.debug(f"Error for one res")
 
-    args.output_h5.parent.mkdir(parents=True, exist_ok=True)
-    save_properties_to_h5(dico_properties, str(args.output_h5))
-    print(f"Saved {len(dico_properties)} proteins → {args.output_h5}")
+    output_h5 = Path("data/properties/") / (
+        args.input_dir.stem + "_derived_properties.h5"
+    )
+    print(output_h5)
+    output_h5.parent.mkdir(parents=True, exist_ok=True)
+    save_properties_to_h5(dico_properties, str(output_h5))
+    print(f"Saved {len(dico_properties)} proteins → {output_h5}")
 
 
 if __name__ == "__main__":

@@ -345,9 +345,14 @@ def main():
     parser = argparse.ArgumentParser(description="Visualise feature distributions.")
     parser.add_argument("--dataset", default="data/CLIP_dataset/TR1000_max_1024.txt")
     parser.add_argument("--h5", default="data/protein_MD_properties.h5")
-    parser.add_argument("--output", default="results/feature_comparison_violin.pdf")
     parser.add_argument("--ncols", type=int, default=4)
     args = parser.parse_args()
+
+    dataset_stem = Path(args.dataset).stem
+    h5_stem = Path(args.h5).stem
+    output_peth_violin = (
+        f"results/{dataset_stem}_{h5_stem}_feature_comparison_violin.pdf"
+    )
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
 
@@ -363,7 +368,7 @@ def main():
     plot_data = build_plot_data(x_list, y_list, ALL_FEATURES)
 
     print("Generating figure …")
-    make_figure(plot_data, args.output, ncols=args.ncols)
+    make_figure(plot_data, output_peth_violin, ncols=args.ncols)
 
 
 if __name__ == "__main__":

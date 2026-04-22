@@ -65,6 +65,8 @@ def predict_dataset(
         collate_fn=collate_inference,
     )
 
+    best_thr = checkpoint["best_thr"]
+
     model.eval()
     rows = []
 
@@ -86,11 +88,13 @@ def predict_dataset(
             probs = torch.sigmoid(logits).cpu().numpy()
             for i, prot_id in enumerate(protein_ids):
                 valid_probs = probs[i][mask_np[i].astype(bool)]
+                binary = (valid_probs >= best_thr).astype(int)
                 rows.append(
                     {
                         "protein_id": prot_id,
                         "length": int(len(valid_probs)),
                         "predictions": ",".join(map(str, valid_probs.tolist())),
+                        "binary_predictions": ",".join(map(str, binary.tolist())),
                     }
                 )
 
@@ -104,11 +108,13 @@ def predict_dataset(
                     if probs.shape[1] == 2
                     else float(np.max(probs[i]))
                 )
+                binary_score = int(score >= best_thr)
                 rows.append(
                     {
                         "protein_id": prot_id,
                         "length": seq_len,
                         "predictions": ",".join([str(score)] * seq_len),
+                        "binary_predictions": ",".join([str(binary_score)] * seq_len),
                     }
                 )
 
@@ -116,7 +122,9 @@ def predict_dataset(
             raise ValueError(f"Unsupported model output shape: {tuple(logits.shape)}")
 
     Path(output_filepath).parent.mkdir(parents=True, exist_ok=True)
-    df_out = pd.DataFrame(rows, columns=["protein_id", "length", "predictions"])
+    df_out = pd.DataFrame(
+        rows, columns=["protein_id", "length", "predictions", "binary_predictions"]
+    )
     df_out.to_csv(output_filepath, index=False)
     print(f"Saved {len(df_out)} proteins → {output_filepath}")
 
