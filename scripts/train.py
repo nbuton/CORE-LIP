@@ -33,11 +33,9 @@ from tqdm import tqdm
 
 from core_lip import (
     ProteinDataset,
-    ProteinModelConfig,
     ProteinMultiScaleTransformer,
     collate_proteins,
     prepare_data,
-    protein_label_from_residue_labels,
     read_protein_data,
 )
 from core_lip.config import FullConfig
@@ -111,8 +109,10 @@ def set_seed(seed: int = 42) -> None:
 @torch.no_grad()
 def evaluate(model, loader, device):
     model.eval()
-    criterion = nn.CrossEntropyLoss()
-    total_loss, total, correct = 0.0, 0, 0
+    # 1. Use BCEWithLogitsLoss with reduction='none' for masking
+    criterion = nn.BCEWithLogitsLoss(reduction="none")
+
+    total_loss, total_residues, correct_residues = 0.0, 0, 0
     y_true_all, y_score_all = [], []
 
     for x_scalar, x_local, x_pairwise, seq, mask, y in loader:
@@ -124,26 +124,41 @@ def evaluate(model, loader, device):
         tokens, mask, y = seq.long().to(device), mask.to(device), y.to(device)
 
         logits = model(tokens, x_scalar, x_local, x_pairwise, mask)
-        loss = criterion(logits, y)
+        logits = logits.squeeze(-1)  # Shape: [batch, length]
+
+        # 2. Loss Calculation with masking
+        loss_raw = criterion(logits, y.float())
+        loss = (loss_raw * mask).sum() / mask.sum()
+
         if not torch.isfinite(loss):
             raise RuntimeError("Non-finite validation loss.")
 
-        pred = logits.argmax(dim=1)
-        correct += (pred == y).sum().item()
-        total += y.size(0)
-        total_loss += loss.item() * y.size(0)
-        y_true_all.append(y.cpu())
-        y_score_all.append(logits.cpu())
+        # 3. Binary Prediction (thresholding at 0)
+        preds = (logits > 0).float()
 
-    avg_loss = total_loss / max(total, 1)
-    accuracy = correct / max(total, 1)
+        # 4. Accuracy logic: only count non-masked residues
+        correct_residues += ((preds == y) * mask).sum().item()
+        total_residues += mask.sum().item()
+        total_loss += loss.item() * mask.sum().item()
 
+        # 5. Store values for ROC AUC (filtering out padding)
+        # We only take the values where mask == 1
+        y_true_all.append(y[mask == 1].cpu())
+        y_score_all.append(logits[mask == 1].cpu())
+
+    # Final Metrics
+    avg_loss = total_loss / max(total_residues, 1)
+    accuracy = correct_residues / max(total_residues, 1)
+
+    # 6. ROC AUC Calculation
     y_true = torch.cat(y_true_all).numpy()
     y_score = torch.cat(y_score_all).numpy()
+
     try:
-        y_prob = torch.softmax(torch.from_numpy(y_score), dim=1).numpy()[:, 1]
+        # For binary, y_score is the logit. sigmoid converts it to probability.
+        y_prob = torch.sigmoid(torch.from_numpy(y_score)).numpy()
         roc_auc = float(roc_auc_score(y_true, y_prob))
-    except ValueError:
+    except (ValueError, RuntimeError):
         roc_auc = float("nan")
 
     return avg_loss, accuracy, roc_auc
@@ -167,10 +182,13 @@ def train_one_epoch(
         y = y.to(device)
 
         logits = model(tokens, x_scalar, x_local, x_pairwise, mask)
+        logits = logits.squeeze(-1)
+
         if not torch.isfinite(logits).all():
             raise RuntimeError(f"Non-finite logits at batch {batch_idx}.")
 
-        loss = criterion(logits, y) / accumulation_step
+        loss_raw = criterion(logits, y.float())
+        loss = (loss_raw * mask).sum() / mask.sum() / accumulation_step
         if not torch.isfinite(loss):
             raise RuntimeError(f"Non-finite loss at batch {batch_idx}.")
         loss.backward()
@@ -182,7 +200,7 @@ def train_one_epoch(
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
 
-        total_loss += loss.item() * y.size(0)
+        total_loss += loss.item() * y.size(0) * accumulation_step
         total += y.size(0)
 
     return total_loss / max(total, 1)
@@ -197,48 +215,64 @@ def select_threshold_cv(
 ) -> float:
     """
     Collect residue-level positive-class probabilities over *loader*, then
-    pick the decision threshold that maximises mean MCC in n_splits-fold CV
-    (protein-level folds), matching the CLIP benchmarking protocol.
+    pick the decision threshold that maximises mean MCC in n_splits-fold CV.
     """
     model.eval()
     all_scores, all_labels = [], []
 
     with torch.no_grad():
-        for batch_idx, (x_scalar, x_local, x_pairwise, seq, mask, y) in tqdm(
-            enumerate(loader), total=len(loader)
-        ):
-            x_scalar = x_scalar.to(device)
-            x_local = x_local.to(device)
-            x_pairwise = x_pairwise.to(device)
-            tokens = seq.long().to(device)
-            mask = mask.to(device)
-            y = y.to(device)
-            lengths = mask.sum(dim=1).int().cpu().numpy()
+        for x_scalar, x_local, x_pairwise, seq, mask, y in tqdm(loader):
+            x_scalar, x_local, x_pairwise = (
+                x_scalar.to(device),
+                x_local.to(device),
+                x_pairwise.to(device),
+            )
+            tokens, mask, y = seq.long().to(device), mask.to(device), y.to(device)
+
             logits = model(tokens, x_scalar, x_local, x_pairwise, mask)
-            probs = torch.softmax(logits, dim=-1)[..., 1]  # positive-class prob
-            safe_probs = probs.view(len(lengths), -1)
-            safe_labels = y.view(len(lengths), -1)
-            if probs.dim() == 1:
-                probs = probs.unsqueeze(0)
-            for i, length in enumerate(lengths):
-                all_scores.append(safe_probs[i, :length].detach().cpu().numpy())
-                all_labels.append(safe_labels[i, :length].detach().cpu().numpy())
+            logits = logits.squeeze(-1)  # Ensure shape [batch, length]
+
+            # 1. Correct probability calculation for Binary BCE setup
+            probs = torch.sigmoid(logits)
+
+            # 2. Extract valid residues using mask for each protein in batch
+            # This is cleaner than safe_probs view logic
+            for i in range(logits.size(0)):
+                m = mask[i].bool()
+                all_scores.append(probs[i][m].cpu().numpy())
+                all_labels.append(y[i][m].cpu().numpy())
 
     protein_ids = np.arange(len(all_scores))
     n_splits_eff = min(n_splits, len(protein_ids))
     kf = KFold(n_splits=n_splits_eff, shuffle=True, random_state=seed)
 
-    candidate_thresholds = np.sort(np.unique(np.concatenate(all_scores)))
+    # Concatenate all scores to find unique thresholds
+    flat_scores = np.concatenate(all_scores)
+
+    # Optimization: If you have millions of residues, unique thresholds might be too many.
+    # We can subsample or use a fixed range if this is too slow.
+    candidate_thresholds = np.sort(np.unique(flat_scores))
+
+    # Optional: if unique thresholds are > 1000, consider np.linspace(0, 1, 100)
+    if len(candidate_thresholds) > 1000:
+        candidate_thresholds = np.linspace(flat_scores.min(), flat_scores.max(), 200)
+
     mean_mccs = []
-    for thr in candidate_thresholds:
+    for thr in tqdm(candidate_thresholds, desc="Optimizing Threshold"):
         fold_mccs = []
         for _, val_idx in kf.split(protein_ids):
+            # Evaluate threshold on this fold
             y_true = np.concatenate([all_labels[i] for i in val_idx])
             y_score = np.concatenate([all_scores[i] for i in val_idx])
-            fold_mccs.append(matthews_corrcoef(y_true, (y_score > thr).astype(np.int8)))
-        mean_mccs.append(float(np.mean(fold_mccs)))
 
-    return float(candidate_thresholds[int(np.argmax(mean_mccs))])
+            # Calculate MCC
+            mcc = matthews_corrcoef(y_true, (y_score > thr).astype(np.int8))
+            fold_mccs.append(mcc)
+
+        mean_mccs.append(np.mean(fold_mccs))
+
+    best_threshold = float(candidate_thresholds[np.argmax(mean_mccs)])
+    return best_threshold
 
 
 def get_config(yaml_path: str) -> FullConfig:
@@ -261,8 +295,6 @@ def main():
         help="Path to config.yaml",
         default="data/models/CORE_LIP_STARLING/config.yaml",
     )
-    parser.add_argument("--dataset", default="data/CLIP_dataset/TR1000_max_380.txt")
-    parser.add_argument("--h5", default="data/STARLING_derived_properties.h5")
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
 
@@ -280,18 +312,15 @@ def main():
     device = torch.device(args.device)
 
     print(f"Config:  {args.config}")
-    print(f"Dataset: {args.dataset}")
-    print(f"H5:      {args.h5}")
     print(f"Device:  {device}")
 
     # ── Data ───────────────────────────────────────────────────────────────────
-    with h5py.File(args.h5, "r") as h5:
-        df = read_protein_data(args.dataset)
+    with h5py.File(train_cfg.h5_properties, "r") as h5:
+        df = read_protein_data(train_cfg.training_dataset)
         X_scalar, X_local, X_pairwise, seqs, y_list, ids = prepare_data(
             df, h5, SCALAR_FEATURES, LOCAL_FEATURES, PAIRWISE_FEATURES
         )
 
-    y_prot = [protein_label_from_residue_labels(y) for y in y_list]
     dataset = ProteinDataset(X_scalar, X_local, X_pairwise, seqs, y_list)
 
     n = len(dataset)
@@ -320,11 +349,10 @@ def main():
     )
 
     # ── Model ──────────────────────────────────────────────────────────────────
-    num_classes = int(np.unique(np.asarray(y_prot)).size)
 
     # ── Dynamic Config Update ──────────────────────────────────────────────────
     # Update the Pydantic object field directly
-    model_cfg.num_classes = num_classes
+    model_cfg.num_classes = 1  # proba of LIP class only
     model_cfg.nb_scalar = len(SCALAR_FEATURES)
     model_cfg.nb_local = len(LOCAL_FEATURES)
     model_cfg.nb_pairwise = len(PAIRWISE_FEATURES)
@@ -335,7 +363,7 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params / 1e6:.2f} M")
 
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.BCEWithLogitsLoss(reduction="none")
     # Changed to dot notation
     optimizer = torch.optim.Adam(model.parameters(), lr=train_cfg.lr)
 
@@ -353,8 +381,8 @@ def main():
         )
         val_loss, val_acc, val_auc = evaluate(model, val_loader, device)
         print(
-            f"Epoch {epoch:03d} | train={train_loss:.4f} | "
-            f"val={val_loss:.4f} | acc={val_acc:.4f} | AUC={val_auc:.4f}"
+            f"Epoch {epoch:03d} | train_loss={train_loss:.4f} | "
+            f"val_loss={val_loss:.4f} | val_accuracy={val_acc:.4f} | val_AUC={val_auc:.4f}"
         )
 
         if val_loss < best_val_loss:

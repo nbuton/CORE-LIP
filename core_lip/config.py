@@ -1,4 +1,5 @@
 from pydantic import BaseModel, model_validator
+from pathlib import Path
 from typing import Tuple
 
 
@@ -60,6 +61,8 @@ class TrainingConfig(BaseModel):
     accumulation: int
     lr: float
     seed: int
+    h5_properties: Path
+    training_dataset: Path
 
 
 # You can now hook this up to your main config just like before:

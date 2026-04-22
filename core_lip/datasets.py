@@ -19,25 +19,6 @@ AA_TO_INT: dict[str, int] = {
 
 
 # ---------------------------------------------------------------------------
-# Label handling
-# ---------------------------------------------------------------------------
-
-
-def protein_label_from_residue_labels(y) -> int:
-    """
-    Convert a residue-level label array to a single protein-level integer.
-    Returns the majority label (or the unique label if unanimous).
-    """
-    y = np.asarray(y).reshape(-1)
-    if y.size == 0:
-        raise ValueError("Empty label array encountered.")
-    if y.size == 1:
-        return int(y[0])
-    values, counts = np.unique(y, return_counts=True)
-    return int(values[np.argmax(counts)])
-
-
-# ---------------------------------------------------------------------------
 # Training / validation dataset
 # ---------------------------------------------------------------------------
 
@@ -68,8 +49,6 @@ class ProteinDataset(Dataset):
         self.X_pairwise_list = X_pairwise_list
         self.seq_enc_list = seq_enc_list
         self.y_list = y_list
-        # Aggregate residue labels to protein-level integer for classification
-        self.labels = [protein_label_from_residue_labels(y) for y in y_list]
 
     def __len__(self) -> int:
         return len(self.X_scalar_list)
@@ -86,7 +65,7 @@ class ProteinDataset(Dataset):
             torch.from_numpy(x_p).float(),
             torch.from_numpy(seq).long(),
         )
-        y = torch.tensor(self.labels[idx], dtype=torch.long)
+        y = torch.from_numpy(np.asarray(self.y_list[idx])).long()
         return inputs, y
 
 
@@ -149,6 +128,9 @@ def collate_proteins(batch):
     Pads all tensors to the longest sequence in the batch and returns a
     boolean mask (True = real residue, False = padding).
 
+    Padding positions in y are filled with -100 so they are ignored by
+    CrossEntropyLoss by default.
+
     Returns
     -------
     x_scalar_pad   : [B, nb_scalar]
@@ -156,7 +138,7 @@ def collate_proteins(batch):
     x_pairwise_pad : [B, nb_pairwise, max_len, max_len]
     seq_pad        : [B, max_len]
     mask           : [B, max_len]
-    y              : [B]
+    y_pad          : [B, max_len]   — per-residue labels, -100 at padding positions
     """
     inputs, ys = zip(*batch)
     xs_scalar, xs_local, xs_pairwise, seqs = zip(*inputs)
@@ -175,6 +157,7 @@ def collate_proteins(batch):
         (B, nb_pairwise, max_len, max_len), dtype=torch.float32
     )
     seq_pad = torch.zeros((B, max_len), dtype=torch.long)
+    y_pad = torch.full((B, max_len), fill_value=-100, dtype=torch.long)
 
     for i in range(B):
         L = int(lengths[i])
@@ -182,11 +165,11 @@ def collate_proteins(batch):
         x_local_pad[i, :, :L] = xs_local[i]
         x_pairwise_pad[i, :, :L, :L] = xs_pairwise[i]
         seq_pad[i, :L] = seqs[i]
+        y_pad[i, :L] = ys[i]
 
     mask = torch.arange(max_len).unsqueeze(0) < lengths.unsqueeze(1)
-    y = torch.stack(ys)
 
-    return x_scalar_pad, x_local_pad, x_pairwise_pad, seq_pad, mask, y
+    return x_scalar_pad, x_local_pad, x_pairwise_pad, seq_pad, mask, y_pad
 
 
 def collate_inference(batch):

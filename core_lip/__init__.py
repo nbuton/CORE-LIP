@@ -15,7 +15,6 @@ from core_lip.datasets import (
     ProteinInferenceDataset,
     collate_proteins,
     collate_inference,
-    protein_label_from_residue_labels,
 )
 from core_lip.utils import prepare_data, read_protein_data, filter_protein_file
 

@@ -301,7 +301,7 @@ class BiasedMultiHeadAttention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
         # One learnable gate per head
-        self.bias_gate = nn.Parameter(torch.zeros(num_heads))
+        self.bias_gate = nn.Parameter(torch.ones(num_heads) * 0.5)
 
         self.attn_dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(embed_dim)
@@ -383,7 +383,7 @@ class TransformerBlock(nn.Module):
         attn_bias = self.pairwise_cnn(x_pairwise)  # [B, H, L, L]
         x = self.attention(x, attn_bias, mask)
         x = self.ffn(x)
-        return x, x_pairwise
+        return x
 
 
 # ---------------------------------------------------------------------------
@@ -488,13 +488,10 @@ class ProteinMultiScaleTransformer(nn.Module):
 
         # 2. Transformer blocks
         for block in self.blocks:
-            x, x_pairwise = block(x, x_pairwise, mask)
+            x = x + block(x, x_pairwise, mask)
 
-        # 3. Masked mean pooling → [B, E]
-        x = self.pool(x, mask)
-
-        # 4. Classification head
-        return self.head(x)  # [B, num_classes]
+        # 3. Classification head
+        return self.head(x)  # [B, L,  num_classes]
 
 
 # ---------------------------------------------------------------------------

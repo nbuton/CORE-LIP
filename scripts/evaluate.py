@@ -1,7 +1,7 @@
 """
 CORE-LIP — Step 5: Evaluate predictions
 =========================================
-Evaluates one or more models on a held-out test set.
+Evaluates one or more models on a held-out test set at the residue level.
 All prediction files must follow the CSV format produced by predict.py:
     protein_id, length, predictions, binary_predictions [, extra columns ignored]
 
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -28,8 +29,6 @@ import matplotlib.ticker as mticker
 import numpy as np
 from matplotlib.lines import Line2D
 from sklearn.metrics import f1_score, matthews_corrcoef, roc_auc_score, roc_curve
-import csv
-import sys
 
 csv.field_size_limit(sys.maxsize)
 
@@ -42,21 +41,22 @@ class ResidueExample:
     def __init__(self, protein_id: str, sequence: str, y_true: np.ndarray):
         self.protein_id = protein_id
         self.sequence = sequence
-        self.y_true = y_true
-        self.predictions: Dict[str, np.ndarray] = {}  # continuous scores
-        self.binary_preds: Dict[str, np.ndarray] = {}  # binary labels
+        self.y_true = y_true  # per-residue ground truth (int8)
+        self.scores: Dict[str, np.ndarray] = {}  # per-residue continuous scores
+        self.binary: Dict[str, np.ndarray] = {}  # per-residue binary predictions
 
     def add_prediction(
         self, model_name: str, scores: np.ndarray, binary: np.ndarray
     ) -> None:
+        n = len(self.sequence)
         for arr, label in [(scores, "scores"), (binary, "binary")]:
-            if len(arr) != len(self.sequence):
+            if len(arr) != n:
                 raise ValueError(
                     f"Length mismatch for {self.protein_id} / {model_name} "
-                    f"({label}): seq={len(self.sequence)}, pred={len(arr)}"
+                    f"({label}): seq={n}, pred={len(arr)}"
                 )
-        self.predictions[model_name] = scores
-        self.binary_preds[model_name] = binary
+        self.scores[model_name] = scores
+        self.binary[model_name] = binary
 
 
 # ---------------------------------------------------------------------------
@@ -90,14 +90,14 @@ def _parse_prob_string(s: str) -> np.ndarray:
     s = s.strip().strip('"')
     if not s:
         return np.array([], dtype=np.float64)
-    return np.array([float(x) for x in s.split(",") if x != ""], dtype=np.float64)
+    return np.array([float(x) for x in s.split(",") if x], dtype=np.float64)
 
 
 def _parse_binary_csv_string(s: str) -> np.ndarray:
     s = s.strip().strip('"')
     if not s:
         return np.array([], dtype=np.int8)
-    return np.array([int(x) for x in s.split(",") if x != ""], dtype=np.int8)
+    return np.array([int(x) for x in s.split(",") if x], dtype=np.int8)
 
 
 def parse_truth_file(path: str | Path) -> Dict[str, ResidueExample]:
@@ -109,7 +109,10 @@ def parse_truth_file(path: str | Path) -> Dict[str, ResidueExample]:
         sequence = block[1].strip()
         y_true = _parse_binary_string("".join(block[2:]).strip())
         if len(sequence) != len(y_true):
-            raise ValueError(f"Length mismatch for {protein_id}")
+            raise ValueError(
+                f"Length mismatch for {protein_id}: "
+                f"seq={len(sequence)}, labels={len(y_true)}"
+            )
         records[protein_id] = ResidueExample(protein_id, sequence, y_true)
     return records
 
@@ -131,11 +134,10 @@ def parse_prediction_csv(
             raise ValueError(
                 f"CSV must contain columns {sorted(required)}; got {reader.fieldnames}"
             )
-        missing = []
         for row in reader:
             pid = row["protein_id"].strip()
             if pid not in records:
-                continue  # extra protein — ignore
+                continue
             expected_len = int(row["length"])
             scores = _parse_prob_string(row["predictions"])
             binary = _parse_binary_csv_string(row["binary_predictions"])
@@ -146,8 +148,7 @@ def parse_prediction_csv(
                 )
             records[pid].add_prediction(model_name, scores, binary)
 
-    # Report proteins in truth file that had no prediction
-    missing = [pid for pid in records if model_name not in records[pid].predictions]
+    missing = [pid for pid in records if model_name not in records[pid].scores]
     if missing:
         raise ValueError(
             f"Model '{model_name}' is missing predictions for "
@@ -156,27 +157,35 @@ def parse_prediction_csv(
 
 
 # ---------------------------------------------------------------------------
-# Metrics
+# Residue-level metrics
 # ---------------------------------------------------------------------------
 
 
-def compute_metrics(
+def compute_residue_metrics(
     records: Dict[str, ResidueExample],
     model_name: str,
 ) -> Dict:
-    y_true_all, y_score_all, y_pred_all = [], [], []
-    for rec in records.values():
-        if model_name in rec.predictions:
-            y_true_all.append(rec.y_true.astype(np.int8))
-            y_score_all.append(rec.predictions[model_name].astype(np.float64))
-            y_pred_all.append(rec.binary_preds[model_name].astype(np.int8))
+    """Concatenate all per-residue labels/scores and compute residue-level metrics."""
+    y_true = np.concatenate(
+        [r.y_true.astype(np.int8) for r in records.values() if model_name in r.scores]
+    )
+    y_score = np.concatenate(
+        [
+            r.scores[model_name].astype(np.float64)
+            for r in records.values()
+            if model_name in r.scores
+        ]
+    )
+    y_pred = np.concatenate(
+        [
+            r.binary[model_name].astype(np.int8)
+            for r in records.values()
+            if model_name in r.scores
+        ]
+    )
 
-    if not y_true_all:
-        raise ValueError(f"No predictions found for model '{model_name}'")
-
-    y_true = np.concatenate(y_true_all)
-    y_score = np.concatenate(y_score_all)
-    y_pred = np.concatenate(y_pred_all)
+    if len(y_true) == 0:
+        raise ValueError(f"No residue-level predictions found for model '{model_name}'")
 
     out: Dict = {
         "model": model_name,
@@ -249,18 +258,14 @@ def plot_roc_curves(
         color = _PALETTE[i % len(_PALETTE)]
         lw = 2.2 if i == 0 else 1.6
         try:
-            yt = np.concatenate(
-                [
-                    r.y_true.astype(np.int8)
-                    for r in records.values()
-                    if name in r.predictions
-                ]
+            y_true = np.concatenate(
+                [r.y_true.astype(np.int8) for r in records.values() if name in r.scores]
             )
-            ys = np.concatenate(
-                [r.predictions[name] for r in records.values() if name in r.predictions]
+            y_score = np.concatenate(
+                [r.scores[name] for r in records.values() if name in r.scores]
             )
-            fpr, tpr, _ = roc_curve(yt, ys)
-            auc = roc_auc_score(yt, ys)
+            fpr, tpr, _ = roc_curve(y_true, y_score)
+            auc = roc_auc_score(y_true, y_score)
             ax.plot(fpr, tpr, color=color, lw=lw, alpha=0.92)
             handles.append(
                 Line2D([], [], color=color, lw=lw, label=f"{name}  (AUC = {auc:.3f})")
@@ -349,7 +354,9 @@ def plot_metrics_bar(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate prediction CSV files.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate prediction CSV files at the residue level."
+    )
     parser.add_argument(
         "--test_truth",
         required=True,
@@ -383,15 +390,15 @@ def main():
     test_records = parse_truth_file(args.test_truth)
     print(f"Loaded {len(test_records)} proteins from {args.test_truth}")
 
-    # Load predictions and compute metrics
+    # Load predictions and compute residue-level metrics
     all_results = []
     for pred_file, name in zip(args.pred_files, args.names):
         print(f"Loading predictions for '{name}' from {pred_file} …")
         parse_prediction_csv(pred_file, test_records, name)
-        all_results.append(compute_metrics(test_records, name))
+        all_results.append(compute_residue_metrics(test_records, name))
 
     # Print table
-    print("\n=== Test-set evaluation ===")
+    print("\n=== Residue-level evaluation ===")
     print_results_table(all_results)
 
     # Figures
@@ -399,12 +406,12 @@ def main():
     plot_roc_curves(
         test_records,
         model_names,
-        title="ROC Curves – LIP Test Set",
+        title="ROC Curves – LIP Test Set (residue level)",
         save_path=output_dir / "roc_curves.pdf",
     )
     plot_metrics_bar(
         all_results,
-        title="Model Performance – LIP Test Set",
+        title="Model Performance – LIP Test Set (residue level)",
         save_path=output_dir / "metrics_bar.pdf",
     )
     plt.show()
