@@ -40,6 +40,7 @@ from core_lip import (
     read_protein_data,
 )
 from core_lip.config import FullConfig
+from core_lip.utils import get_all_feature_stats
 
 # ---------------------------------------------------------------------------
 # Feature configuration (edit here to change the feature set)
@@ -108,11 +109,8 @@ def set_seed(seed: int = 42) -> None:
 
 
 @torch.no_grad()
-def evaluate(model, loader, device):
+def evaluate(model, loader, criterion, device):
     model.eval()
-    # 1. Use BCEWithLogitsLoss with reduction='none' for masking
-    criterion = nn.BCEWithLogitsLoss(reduction="none")
-
     total_loss, total_batch = 0.0, 0
     y_true_all, y_score_all = [], []
 
@@ -285,6 +283,38 @@ def get_config(yaml_path: str) -> FullConfig:
         return FullConfig.model_validate(yaml.safe_load(f))
 
 
+import numpy as np
+import pandas as pd
+
+
+def analyze_scalar_list(x_list: list, feature_names: list) -> pd.DataFrame:
+    """
+    Converts a list of 1D arrays into a DataFrame and analyzes
+    distribution statistics for protein scalar features.
+    """
+    # 1. Stack list of arrays into a single 2D matrix [N_proteins, N_features]
+    data_matrix = np.stack(x_list)
+
+    # 2. Create DataFrame for easy analysis
+    df = pd.DataFrame(data_matrix, columns=feature_names)
+
+    # 3. Calculate metrics
+    stats = df.agg(["min", "max", "mean", "std"]).transpose()
+
+    # 4. Add Range and Coefficient of Variation (CV)
+    # CV (std/mean) helps identify features with high relative dispersion
+    stats["range"] = stats["max"] - stats["min"]
+    stats["cv"] = stats["std"] / (stats["mean"].abs() + 1e-9)
+
+    # 5. Sort by range to identify features that might cause "explosion"
+    stats = stats.sort_values(by="range", ascending=False)
+
+    print(
+        f"Analyzed {data_matrix.shape[0]} proteins with {data_matrix.shape[1]} features each."
+    )
+    return stats
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -323,6 +353,7 @@ def main():
         X_scalar, X_local, X_pairwise, seqs, y_list, ids = prepare_data(
             df, h5, SCALAR_FEATURES, LOCAL_FEATURES, PAIRWISE_FEATURES
         )
+        print(analyze_scalar_list(X_scalar, SCALAR_FEATURES))
 
     dataset = ProteinDataset(X_scalar, X_local, X_pairwise, seqs, y_list)
 
@@ -365,7 +396,8 @@ def main():
     model_cfg.nb_pairwise = len(PAIRWISE_FEATURES)
 
     # Pass the validated object to the model
-    model = ProteinMultiScaleTransformer(model_cfg).to(device)
+    stats = get_all_feature_stats(X_scalar, X_local, X_pairwise)
+    model = ProteinMultiScaleTransformer(model_cfg, stats).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params / 1e6:.2f} M")
@@ -407,7 +439,7 @@ def main():
             device,
         )
         all_train_loss.append(train_loss)
-        val_loss, val_auc = evaluate(model, val_loader, device)
+        val_loss, val_auc = evaluate(model, val_loader, criterion, device)
         all_validation_loss.append(val_loss)
         all_val_auc.append(val_auc)
         print(
@@ -421,6 +453,7 @@ def main():
                 {
                     "model_state_dict": model.state_dict(),
                     "cfg": model_cfg,
+                    "stats": stats,
                     "scalar_features": SCALAR_FEATURES,
                     "local_features": LOCAL_FEATURES,
                     "pairwise_features": PAIRWISE_FEATURES,

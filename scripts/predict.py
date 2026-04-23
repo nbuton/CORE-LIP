@@ -30,6 +30,13 @@ from core_lip import (
     prepare_data,
     read_protein_data,
 )
+from core_lip.utils import get_all_feature_stats
+from train import (
+    LOCAL_FEATURES,
+    PAIRWISE_FEATURES,
+    SCALAR_FEATURES,
+    analyze_scalar_list,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +136,10 @@ def main():
     device = torch.device(args.device)
 
     checkpoint = torch.load(args.model, map_location=device, weights_only=False)
-    model = ProteinMultiScaleTransformer(checkpoint["cfg"]).to(device)
+
+    model = ProteinMultiScaleTransformer(checkpoint["cfg"], checkpoint["stats"]).to(
+        device
+    )
     model.load_state_dict(checkpoint["model_state_dict"])
     print(f"Loaded checkpoint from: {args.model}")
 

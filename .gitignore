@@ -3,3 +3,4 @@ results/*
 .DS_STORE
 core_lip.egg-info/*
 core_lip/__pycache__/**
+scripts/__pycache__/**

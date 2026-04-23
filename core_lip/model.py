@@ -116,38 +116,89 @@ class SequenceEmbedding(nn.Module):
 
 class LocalFeatureProjector(nn.Module):
     """
-    Projects per-residue local features to embedding space.
+    Projects per-residue local features to embedding space with learned scaling.
     x_local [B, nb_local, L]  →  [B, L, E]
     """
 
     def __init__(
-        self, nb_local: int, embed_dim: int, hidden_dim: int, dropout: float = 0.1
+        self,
+        nb_local: int,
+        embed_dim: int,
+        hidden_dim: int,
+        means: torch.Tensor,
+        stds: torch.Tensor,
+        dropout: float = 0.1,
     ):
         super().__init__()
+        # 1. Initialize the normalization layer with local feature stats
+        self.scaler = LearnedScalarNorm(
+            nb_local, initial_means=means, initial_stds=stds
+        )
+
+        # 2. Project the normalized features
         self.mlp = MLP2(nb_local, hidden_dim, embed_dim, dropout)
 
     def forward(self, x_local: torch.Tensor) -> torch.Tensor:
         """x_local: [B, nb_local, L]  →  [B, L, E]"""
-        x = x_local.permute(0, 2, 1)  # [B, L, nb_local]
-        return self.mlp(x)  # [B, L, E]
+        # Step 1: Move features to the last dimension [B, L, nb_local]
+        x = x_local.permute(0, 2, 1)
+
+        # Step 2: Apply learned scaling per feature
+        x_scaled = self.scaler(x)
+
+        # Step 3: Project to embedding space
+        return self.mlp(x_scaled)  # [B, L, E]
+
+
+class LearnedScalarNorm(nn.Module):
+    def __init__(
+        self,
+        nb_scalar: int,
+        initial_means: torch.Tensor = None,
+        initial_stds: torch.Tensor = None,
+    ):
+        super().__init__()
+        # Initialize shift (mu) and scale (sigma)
+        # If no stats provided, start at 0 and 1
+        if initial_means is None:
+            initial_means = torch.zeros(nb_scalar)
+        if initial_stds is None:
+            initial_stds = torch.ones(nb_scalar)
+
+        # We use nn.Parameter so the optimizer can update them
+        self.mean = nn.Parameter(initial_means)
+        self.log_std = nn.Parameter(torch.log(initial_stds + 1e-6))
+
+    def forward(self, x):
+        # We use exp(log_std) to ensure the standard deviation stays positive
+        return (x - self.mean) / (torch.exp(self.log_std) + 1e-6)
 
 
 class ScalarFeatureProjector(nn.Module):
-    """
-    Projects per-protein scalar features, then broadcasts to all residues.
-    x_scalar [B, nb_scalar]  →  [B, L, E]
-    """
-
     def __init__(
-        self, nb_scalar: int, embed_dim: int, hidden_dim: int, dropout: float = 0.1
+        self,
+        nb_scalar: int,
+        embed_dim: int,
+        hidden_dim: int,
+        dropout: float,
+        means: torch.Tensor,
+        stds: torch.Tensor,
     ):
         super().__init__()
-        self.mlp = MLP2(nb_scalar, hidden_dim, embed_dim, dropout)
+        # 1. The Scaling Layer (Independent scaling per feature)
+        self.scaler = LearnedScalarNorm(
+            nb_scalar, initial_means=means, initial_stds=stds
+        )
+
+        # 2. The Projection Layer
+        self.mlp = MLP2(nb_scalar, hidden_dim, embed_dim, dropout=dropout)
 
     def forward(self, x_scalar: torch.Tensor, L: int) -> torch.Tensor:
-        """x_scalar: [B, nb_scalar]  →  [B, L, E]"""
-        protein_repr = self.mlp(x_scalar)  # [B, E]
-        return protein_repr.unsqueeze(1).expand(-1, L, -1)  # [B, L, E]
+        # Step 1: Scale raw values
+        x_scaled = self.scaler(x_scalar)
+        # Step 2: Project
+        protein_repr = self.mlp(x_scaled)
+        return protein_repr.unsqueeze(1).expand(-1, L, -1)
 
 
 class PairwiseContextProjector(nn.Module):
@@ -162,6 +213,8 @@ class PairwiseContextProjector(nn.Module):
         self,
         nb_pairwise: int,
         embed_dim: int,
+        means: torch.Tensor,
+        stds: torch.Tensor,
         dropout: float = 0.1,
         window_size: int = 1024,
     ):
@@ -169,6 +222,9 @@ class PairwiseContextProjector(nn.Module):
         self.E = embed_dim
         self.half = window_size // 2
         self.window = window_size  # fixed window, independent of embed_dim
+        self.scaler = LearnedScalarNorm(
+            nb_pairwise, initial_means=means, initial_stds=stds
+        )
         in_dim = nb_pairwise * (self.window + 1)
         self.mlp = MLP2(in_dim, embed_dim, embed_dim, dropout)
 
@@ -195,6 +251,9 @@ class PairwiseContextProjector(nn.Module):
     def forward(self, x_pairwise: torch.Tensor) -> torch.Tensor:
         """x_pairwise: [B, C, L, L]  →  [B, L, E]"""
         B, C, L, _ = x_pairwise.shape
+        x = x_pairwise.permute(0, 2, 3, 1)  # [B, L, L, C]
+        x_scaled = self.scaler(x)
+        x_scaled = x_scaled.permute(0, 3, 1, 2)  # [B, C, L, L] back for extraction
         windows = self._extract_windows(x_pairwise)  # [B, L, C, window+1]
         flat = windows.reshape(B, L, C * (self.window + 1))
         return self.mlp(flat)  # [B, L, E]
@@ -480,7 +539,7 @@ class ProteinMultiScaleTransformer(nn.Module):
     logits    : [B, num_classes]
     """
 
-    def __init__(self, cfg: ProteinModelConfig):
+    def __init__(self, cfg: ProteinModelConfig, stats):
         super().__init__()
         self.cfg = cfg
         E = cfg.embed_dim
@@ -491,14 +550,28 @@ class ProteinMultiScaleTransformer(nn.Module):
         self.seq_emb = SequenceEmbedding(
             cfg.vocab_size, E, cfg.max_seq_len, cfg.dropout, only_pos_embedding
         )
-        self.local_proj = LocalFeatureProjector(
-            cfg.nb_local, E, cfg.local_mlp_hidden, cfg.dropout
-        )
         self.scalar_proj = ScalarFeatureProjector(
-            cfg.nb_scalar, E, cfg.scalar_mlp_hidden, cfg.dropout
+            cfg.nb_scalar,
+            E,
+            cfg.scalar_mlp_hidden,
+            cfg.dropout,
+            stats["scalar"]["means"],
+            stats["scalar"]["stds"],
+        )
+        self.local_proj = LocalFeatureProjector(
+            cfg.nb_local,
+            E,
+            cfg.local_mlp_hidden,
+            stats["local"]["means"],
+            stats["local"]["stds"],
+            cfg.dropout,
         )
         self.pairwise_init_proj = PairwiseContextProjector(
-            cfg.nb_pairwise, E, cfg.dropout
+            cfg.nb_pairwise,
+            E,
+            stats["pairwise"]["means"],
+            stats["pairwise"]["stds"],
+            cfg.dropout,
         )
         self.embed_norm = nn.LayerNorm(E)
 

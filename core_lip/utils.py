@@ -5,7 +5,8 @@ CORE-LIP — Data preparation and I/O utilities
 
 import numpy as np
 import pandas as pd
-
+from sklearn.preprocessing import StandardScaler
+import torch
 from core_lip.datasets import AA_TO_INT
 
 
@@ -149,3 +150,53 @@ def prepare_data(
         list_ids.append(pid)
 
     return X_scalar_list, X_local_list, X_pairwise_list, seq_enc_list, y_list, list_ids
+
+
+def get_all_feature_stats(X_scalar_list, X_local_list, X_pairwise_list):
+    """
+    Computes means and stds for Scalar, Local, and Pairwise features.
+
+    Returns:
+        Dict of { 'means': Tensor, 'stds': Tensor } for each type.
+    """
+    stats = {}
+
+    # --- 1. Scalar Stats: Shape (N, nb_scalar) ---
+    X_scalar_matrix = np.stack(X_scalar_list)
+    s_scaler = StandardScaler().fit(X_scalar_matrix)
+    stats["scalar"] = {
+        "means": torch.from_numpy(s_scaler.mean_).float(),
+        "stds": torch.from_numpy(s_scaler.scale_).float(),
+    }
+
+    # --- 2. Local Stats: List of (nb_local, L) ---
+    # We must flatten all L dimensions across all proteins
+    # Resulting shape for fit: (Total_Residues_in_Dataset, nb_local)
+    X_local_flat = np.concatenate([arr.T for arr in X_local_list], axis=0)
+    l_scaler = StandardScaler().fit(X_local_flat)
+    stats["local"] = {
+        "means": torch.from_numpy(l_scaler.mean_).float(),
+        "stds": torch.from_numpy(l_scaler.scale_).float(),
+    }
+
+    # --- 3. Pairwise Stats: List of (nb_pairwise, L, L) ---
+    # We flatten both L dimensions: (nb_pairwise, L*L)
+    # Resulting shape for fit: (Total_Pairs_in_Dataset, nb_pairwise)
+    if X_pairwise_list and X_pairwise_list[0].size > 0:
+        # Move nb_features to the last dim and flatten spatial dims
+        X_pair_flat = np.concatenate(
+            [
+                arr.transpose(1, 2, 0).reshape(-1, arr.shape[0])
+                for arr in X_pairwise_list
+            ],
+            axis=0,
+        )
+        p_scaler = StandardScaler().fit(X_pair_flat)
+        stats["pairwise"] = {
+            "means": torch.from_numpy(p_scaler.mean_).float(),
+            "stds": torch.from_numpy(p_scaler.scale_).float(),
+        }
+    else:
+        stats["pairwise"] = {"means": torch.tensor([]), "stds": torch.tensor([])}
+
+    return stats
