@@ -414,7 +414,7 @@ def main():
 
     # Changed to dot notation
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=train_cfg.lr, weight_decay=train_cfg.weigth_decay
+        model.parameters(), lr=train_cfg.lr, weight_decay=train_cfg.weight_decay
     )
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,

@@ -66,7 +66,7 @@ class TrainingConfig(BaseModel):
     batch_size: int
     accumulation: int
     lr: float
-    weigth_decay: float
+    weight_decay: float
     seed: int
     h5_properties: Path
     training_dataset: Path

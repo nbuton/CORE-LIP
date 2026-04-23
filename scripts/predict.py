@@ -30,13 +30,6 @@ from core_lip import (
     prepare_data,
     read_protein_data,
 )
-from core_lip.utils import get_all_feature_stats
-from train import (
-    LOCAL_FEATURES,
-    PAIRWISE_FEATURES,
-    SCALAR_FEATURES,
-    analyze_scalar_list,
-)
 
 
 # ---------------------------------------------------------------------------
