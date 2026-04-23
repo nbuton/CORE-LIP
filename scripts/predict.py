@@ -19,7 +19,6 @@ import argparse
 from pathlib import Path
 
 import h5py
-import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
@@ -78,48 +77,30 @@ def predict_dataset(
         mask = mask.to(device)
 
         logits = model(tokens, x_scalar_pad, x_local_pad, x_pairwise_pad, mask)
-        mask_np = mask.cpu().numpy()
 
-        # Residue-wise model output: [B, L] or [B, L, 1]
+        # Squeeze trailing singleton dim if present: [B, L, 1] -> [B, L]
         if logits.dim() == 3 and logits.size(-1) == 1:
             logits = logits.squeeze(-1)
 
-        if logits.dim() == 2 and logits.shape[1] == mask.shape[1]:
-            probs = torch.sigmoid(logits).cpu().numpy()
-            for i, prot_id in enumerate(protein_ids):
-                valid_probs = probs[i][mask_np[i].astype(bool)]
-                binary = (valid_probs >= best_thr).astype(int)
-                rows.append(
-                    {
-                        "protein_id": prot_id,
-                        "length": int(len(valid_probs)),
-                        "predictions": ",".join(map(str, valid_probs.tolist())),
-                        "binary_predictions": ",".join(map(str, binary.tolist())),
-                    }
-                )
+        if logits.shape[1] != mask.shape[1]:
+            raise ValueError(
+                f"Expected residue-level output [B, L], got {tuple(logits.shape)}"
+            )
 
-        # Protein-level classifier output: [B, C] — broadcast score to residues
-        elif logits.dim() == 2:
-            probs = torch.softmax(logits, dim=1).cpu().numpy()
-            for i, prot_id in enumerate(protein_ids):
-                seq_len = int(mask_np[i].sum())
-                score = (
-                    float(probs[i, 1])
-                    if probs.shape[1] == 2
-                    else float(np.max(probs[i]))
-                )
-                binary_score = int(score >= best_thr)
-                rows.append(
-                    {
-                        "protein_id": prot_id,
-                        "length": seq_len,
-                        "predictions": ",".join([str(score)] * seq_len),
-                        "binary_predictions": ",".join([str(binary_score)] * seq_len),
-                    }
-                )
+        probs = torch.sigmoid(logits).cpu().numpy()
+        mask_np = mask.cpu().numpy().astype(bool)
 
-        else:
-            raise ValueError(f"Unsupported model output shape: {tuple(logits.shape)}")
+        for i, prot_id in enumerate(protein_ids):
+            valid_probs = probs[i][mask_np[i]]
+            binary = (valid_probs >= best_thr).astype(int)
+            rows.append(
+                {
+                    "protein_id": prot_id,
+                    "length": len(valid_probs),
+                    "predictions": ",".join(map(str, valid_probs.tolist())),
+                    "binary_predictions": ",".join(map(str, binary.tolist())),
+                }
+            )
 
     Path(output_filepath).parent.mkdir(parents=True, exist_ok=True)
     df_out = pd.DataFrame(
@@ -136,35 +117,19 @@ def predict_dataset(
 
 def main():
     parser = argparse.ArgumentParser(description="Run CORE-LIP predictions.")
+    parser.add_argument("--model", default="data/models/core_lip.pt")
+    parser.add_argument("--h5", default="data/protein_MD_properties.h5")
     parser.add_argument(
-        "--model",
-        default="data/models/core_lip.pt",
-        help="Path to the trained model checkpoint (.pt).",
+        "--datasets", nargs="+", default=["data/CLIP_dataset/TE440_reduced.txt"]
     )
-    parser.add_argument(
-        "--h5",
-        default="data/protein_MD_properties.h5",
-        help="HDF5 file of precomputed MD properties.",
-    )
-    parser.add_argument(
-        "--datasets",
-        nargs="+",
-        default=["data/CLIP_dataset/TE440_reduced.txt"],
-        help="One or more dataset files to run inference on.",
-    )
-    parser.add_argument(
-        "--output_dir",
-        default="data/predictions/",
-        help="Directory to write prediction CSV files.",
-    )
+    parser.add_argument("--output_dir", default="data/predictions/")
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
 
     device = torch.device(args.device)
 
     checkpoint = torch.load(args.model, map_location=device, weights_only=False)
-    cfg = checkpoint["cfg"]
-    model = ProteinMultiScaleTransformer(cfg).to(device)
+    model = ProteinMultiScaleTransformer(checkpoint["cfg"]).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     print(f"Loaded checkpoint from: {args.model}")
 

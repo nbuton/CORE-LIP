@@ -112,7 +112,7 @@ def evaluate(model, loader, device):
     # 1. Use BCEWithLogitsLoss with reduction='none' for masking
     criterion = nn.BCEWithLogitsLoss(reduction="none")
 
-    total_loss, total_residues, correct_residues = 0.0, 0, 0
+    total_loss, total_residues = 0.0, 0
     y_true_all, y_score_all = [], []
 
     for x_scalar, x_local, x_pairwise, seq, mask, y in loader:
@@ -133,14 +133,6 @@ def evaluate(model, loader, device):
         if not torch.isfinite(loss):
             raise RuntimeError("Non-finite validation loss.")
 
-        # 3. Binary Prediction (thresholding at 0)
-        preds = (logits > 0).float()
-
-        # 4. Accuracy logic: only count non-masked residues
-        correct_residues += ((preds == y) * mask).sum().item()
-        total_residues += mask.sum().item()
-        total_loss += loss.item() * mask.sum().item()
-
         # 5. Store values for ROC AUC (filtering out padding)
         # We only take the values where mask == 1
         y_true_all.append(y[mask == 1].cpu())
@@ -148,7 +140,6 @@ def evaluate(model, loader, device):
 
     # Final Metrics
     avg_loss = total_loss / max(total_residues, 1)
-    accuracy = correct_residues / max(total_residues, 1)
 
     # 6. ROC AUC Calculation
     y_true = torch.cat(y_true_all).numpy()
@@ -161,7 +152,7 @@ def evaluate(model, loader, device):
     except (ValueError, RuntimeError):
         roc_auc = float("nan")
 
-    return avg_loss, accuracy, roc_auc
+    return avg_loss, roc_auc
 
 
 def train_one_epoch(
@@ -187,8 +178,25 @@ def train_one_epoch(
         if not torch.isfinite(logits).all():
             raise RuntimeError(f"Non-finite logits at batch {batch_idx}.")
 
+        # print("-" * 90)
+        # print(y.shape)
+        # print(logits.shape)
+        # print(y.float().mean())
+        # print(y[mask].float().mean())
+        # print(logits.mean())
+        # print(y[0, :10])
+        # print(logits[0, :10])
+        # print(mask[0, :10])
+        # print(mask[0, -10:])
+        # print(mask[1, :10])
+        # print(mask[1, -10:])
         loss_raw = criterion(logits, y.float())
+        # print(loss_raw.shape)
+        # print(loss_raw.mean())
         loss = (loss_raw * mask).sum() / mask.sum() / accumulation_step
+        # print(loss)
+        # print(logits[0].std())
+        # print("-" * 90)
         if not torch.isfinite(loss):
             raise RuntimeError(f"Non-finite loss at batch {batch_idx}.")
         loss.backward()
@@ -367,7 +375,7 @@ def main():
     # Changed to dot notation
     optimizer = torch.optim.Adam(model.parameters(), lr=train_cfg.lr)
 
-    best_val_loss = float("inf")
+    best_val_auc = float("-inf")
 
     # ── Training Loop (Changed to dot notation) ────────────────────────────────
     for epoch in range(1, train_cfg.epochs + 1):
@@ -379,14 +387,14 @@ def main():
             train_cfg.accumulation,
             device,
         )
-        val_loss, val_acc, val_auc = evaluate(model, val_loader, device)
+        val_loss, val_auc = evaluate(model, val_loader, device)
         print(
             f"Epoch {epoch:03d} | train_loss={train_loss:.4f} | "
-            f"val_loss={val_loss:.4f} | val_accuracy={val_acc:.4f} | val_AUC={val_auc:.4f}"
+            f"val_loss={val_loss:.4f} | val_AUC={val_auc:.4f}"
         )
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if val_auc > best_val_auc:
+            best_val_auc = val_auc
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
@@ -394,7 +402,7 @@ def main():
                     "scalar_features": SCALAR_FEATURES,
                     "local_features": LOCAL_FEATURES,
                     "pairwise_features": PAIRWISE_FEATURES,
-                    "best_val_loss": best_val_loss,
+                    "best_val_auc": best_val_auc,
                 },
                 model_save_path,
             )
@@ -412,7 +420,7 @@ def main():
     torch.save(checkpoint, model_save_path)
     print(f"  ✓ Checkpoint updated with threshold → {model_save_path}")
 
-    print(f"\nTraining complete. Best val loss: {best_val_loss:.6f}")
+    print(f"\nTraining complete. Best val auc: {best_val_auc:.6f}")
 
 
 if __name__ == "__main__":

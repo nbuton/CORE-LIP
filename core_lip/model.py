@@ -150,11 +150,17 @@ class PairwiseContextProjector(nn.Module):
     window to the embedding dimension with a 2-layer MLP.
     """
 
-    def __init__(self, nb_pairwise: int, embed_dim: int, dropout: float = 0.1):
+    def __init__(
+        self,
+        nb_pairwise: int,
+        embed_dim: int,
+        dropout: float = 0.1,
+        window_size: int = 1024,
+    ):
         super().__init__()
         self.E = embed_dim
         self.half = embed_dim // 2
-        self.window = embed_dim  # total window width = E
+        self.window = window_size  # total window width = E
         in_dim = nb_pairwise * (self.window + 1)  # +1 for the centre residue
         self.mlp = MLP2(in_dim, embed_dim, embed_dim, dropout)
 
@@ -488,7 +494,7 @@ class ProteinMultiScaleTransformer(nn.Module):
 
         # 2. Transformer blocks
         for block in self.blocks:
-            x = x + block(x, x_pairwise, mask)
+            x = block(x, x_pairwise, mask)
 
         # 3. Classification head
         return self.head(x)  # [B, L,  num_classes]
