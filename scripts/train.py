@@ -17,6 +17,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from matplotlib import pyplot as plt
 import yaml
@@ -27,7 +28,7 @@ import h5py
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import roc_auc_score, matthews_corrcoef
+from sklearn.metrics import roc_auc_score, matthews_corrcoef, average_precision_score
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -151,10 +152,11 @@ def evaluate(model, loader, criterion, device):
         # For binary, y_score is the logit. sigmoid converts it to probability.
         y_prob = torch.sigmoid(torch.from_numpy(y_score)).numpy()
         roc_auc = float(roc_auc_score(y_true, y_prob))
+        pr_auc = float(average_precision_score(y_true, y_prob))
     except (ValueError, RuntimeError):
         roc_auc = float("nan")
 
-    return avg_loss, roc_auc
+    return avg_loss, roc_auc, pr_auc
 
 
 def train_one_epoch(
@@ -418,7 +420,7 @@ def main():
         optimizer,
         max_lr=train_cfg.lr,
         epochs=train_cfg.epochs,
-        steps_per_epoch=int(len(train_loader) / train_cfg.accumulation),
+        steps_per_epoch=math.ceil(len(train_loader) / train_cfg.accumulation),
         pct_start=0.1,  # 10% warmup
         anneal_strategy="cos",
     )
@@ -439,16 +441,18 @@ def main():
             device,
         )
         all_train_loss.append(train_loss)
-        val_loss, val_auc = evaluate(model, val_loader, criterion, device)
+        val_loss, val_roc_auc, val_pr_auc = evaluate(
+            model, val_loader, criterion, device
+        )
         all_validation_loss.append(val_loss)
-        all_val_auc.append(val_auc)
+        all_val_auc.append(val_roc_auc)
         print(
             f"Epoch {epoch:03d} | train_loss={train_loss:.4f} | "
-            f"val_loss={val_loss:.4f} | val_AUC={val_auc:.4f}"
+            f"val_loss={val_loss:.4f} | val_roc_AUC={val_roc_auc:.4f} | val_pr_AUC={val_pr_auc:.4f}"
         )
 
-        if val_auc > best_val_auc:
-            best_val_auc = val_auc
+        if val_roc_auc > best_val_auc:
+            best_val_auc = val_roc_auc
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
