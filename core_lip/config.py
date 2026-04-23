@@ -31,7 +31,7 @@ class ProteinModelConfig(BaseModel):
     dilatations_cnn: Tuple[int, ...] = (1, 2, 3)
 
     # ── Classification head ───────────────────────────────────────────────
-    num_classes: int = 2
+    num_classes: int = 1
 
     # ── MLP hidden sizes (defaults derived from embed_dim) ────────────────
     local_mlp_hidden: int = -1
@@ -60,6 +60,7 @@ class TrainingConfig(BaseModel):
     batch_size: int
     accumulation: int
     lr: float
+    weigth_decay: float
     seed: int
     h5_properties: Path
     training_dataset: Path

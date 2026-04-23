@@ -112,7 +112,7 @@ def evaluate(model, loader, device):
     # 1. Use BCEWithLogitsLoss with reduction='none' for masking
     criterion = nn.BCEWithLogitsLoss(reduction="none")
 
-    total_loss, total_residues = 0.0, 0
+    total_loss, total_batch = 0.0, 0
     y_true_all, y_score_all = [], []
 
     for x_scalar, x_local, x_pairwise, seq, mask, y in loader:
@@ -130,6 +130,9 @@ def evaluate(model, loader, device):
         loss_raw = criterion(logits, y.float())
         loss = (loss_raw * mask).sum() / mask.sum()
 
+        total_loss += loss.item() * y.size(0)
+        total_batch += y.size(0)
+
         if not torch.isfinite(loss):
             raise RuntimeError("Non-finite validation loss.")
 
@@ -139,7 +142,7 @@ def evaluate(model, loader, device):
         y_score_all.append(logits[mask == 1].cpu())
 
     # Final Metrics
-    avg_loss = total_loss / max(total_residues, 1)
+    avg_loss = total_loss / max(total_batch, 1)
 
     # 6. ROC AUC Calculation
     y_true = torch.cat(y_true_all).numpy()
@@ -156,7 +159,13 @@ def evaluate(model, loader, device):
 
 
 def train_one_epoch(
-    model, loader, optimizer, criterion, accumulation_step, device, grad_clip=1.0
+    model,
+    loader,
+    optimizer,
+    criterion,
+    accumulation_step,
+    device,
+    grad_clip=1.0,
 ):
     model.train()
     total_loss, total = 0.0, 0
@@ -371,9 +380,21 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params / 1e6:.2f} M")
 
-    criterion = nn.BCEWithLogitsLoss(reduction="none")
+    total_pos = sum(y.sum() for y in y_list)
+    total_neg = sum((1 - np.array(y)).sum() for y in y_list)
+    pos_weight_value = total_neg / total_pos
+    print(f"pos_weight: {pos_weight_value:.1f}  (pos={total_pos}, neg={total_neg})")
+
+    pos_weight = torch.tensor([pos_weight_value], device=device, dtype=torch.float32)
+    criterion = nn.BCEWithLogitsLoss(reduction="none", pos_weight=pos_weight)
+
     # Changed to dot notation
-    optimizer = torch.optim.Adam(model.parameters(), lr=train_cfg.lr)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=train_cfg.lr, weight_decay=train_cfg.weigth_decay
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=train_cfg.epochs, eta_min=1e-5
+    )
 
     best_val_auc = float("-inf")
 
@@ -387,6 +408,7 @@ def main():
             train_cfg.accumulation,
             device,
         )
+        scheduler.step()
         val_loss, val_auc = evaluate(model, val_loader, device)
         print(
             f"Epoch {epoch:03d} | train_loss={train_loss:.4f} | "
@@ -407,6 +429,8 @@ def main():
                 model_save_path,
             )
             print(f"  ✓ Checkpoint saved → {model_save_path}")
+        else:
+            print(f"  x Validation AUC doesn't increase so we didn't save the model")
 
     # ── Threshold selection ───────────────────────────────────────────────────
     checkpoint = torch.load(model_save_path, map_location=device, weights_only=False)

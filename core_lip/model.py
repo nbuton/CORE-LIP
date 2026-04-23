@@ -144,9 +144,8 @@ class ScalarFeatureProjector(nn.Module):
 class PairwiseContextProjector(nn.Module):
     """
     Converts pairwise features into per-residue context and adds to embedding.
-
-    For each residue i, gathers a window of E//2 neighbours on each side from
-    the pairwise matrix (padding at boundaries), then projects the flattened
+    For each residue i, gathers a window of window_size//2 neighbours on each side
+    from the pairwise matrix (padding at boundaries), then projects the flattened
     window to the embedding dimension with a 2-layer MLP.
     """
 
@@ -159,9 +158,9 @@ class PairwiseContextProjector(nn.Module):
     ):
         super().__init__()
         self.E = embed_dim
-        self.half = embed_dim // 2
-        self.window = window_size  # total window width = E
-        in_dim = nb_pairwise * (self.window + 1)  # +1 for the centre residue
+        self.half = window_size // 2
+        self.window = window_size  # fixed window, independent of embed_dim
+        in_dim = nb_pairwise * (self.window + 1)
         self.mlp = MLP2(in_dim, embed_dim, embed_dim, dropout)
 
     def _extract_windows(self, x_pairwise: torch.Tensor) -> torch.Tensor:
@@ -172,12 +171,15 @@ class PairwiseContextProjector(nn.Module):
         B, C, L, _ = x_pairwise.shape
         half = self.half
         window = self.window
+
         padded = F.pad(x_pairwise, (half, half), mode="constant", value=0.0)
         flat2 = padded.reshape(B * C, L, L + window)
         slices2 = flat2.unfold(2, window + 1, 1)  # [BC, L, L, window+1]
+
         row_idx = torch.arange(L, device=x_pairwise.device)
         row_idx_exp = row_idx.view(1, L, 1, 1).expand(B * C, -1, 1, window + 1)
         windows_diag = slices2.gather(2, row_idx_exp).squeeze(2)
+
         windows_diag = windows_diag.reshape(B, C, L, window + 1)
         return windows_diag.permute(0, 2, 1, 3)  # [B, L, C, window+1]
 
@@ -185,7 +187,7 @@ class PairwiseContextProjector(nn.Module):
         """x_pairwise: [B, C, L, L]  →  [B, L, E]"""
         B, C, L, _ = x_pairwise.shape
         windows = self._extract_windows(x_pairwise)  # [B, L, C, window+1]
-        flat = windows.reshape(B, L, C * (self.window + 1))  # [B, L, C*(E+1)]
+        flat = windows.reshape(B, L, C * (self.window + 1))
         return self.mlp(flat)  # [B, L, E]
 
 
@@ -266,7 +268,7 @@ class PairwiseCNN(nn.Module):
         merged_channels = cnn_channels * len(dilations)
         self.post_norm = _make_group_norm(merged_channels)
         self.post_act = nn.GELU()
-        self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
         # Final projection to attention heads
         self.to_heads = nn.Conv2d(merged_channels, num_heads, kernel_size=1, bias=True)
@@ -335,13 +337,26 @@ class BiasedMultiHeadAttention(nn.Module):
         attn_logits = attn_logits + self.bias_gate.view(1, H, 1, 1) * bias
 
         if mask is not None:
-            pad_mask = (1.0 - mask.float()).unsqueeze(1).unsqueeze(2) * -1e9
-            attn_logits = attn_logits + pad_mask
+            # Mask padding key positions: [B, 1, 1, L]
+            key_mask = (1.0 - mask.float()).unsqueeze(1).unsqueeze(2) * -1e4
+            attn_logits = attn_logits + key_mask
 
-        attn_weights = self.attn_dropout(torch.softmax(attn_logits, dim=-1))
+        attn_weights = torch.softmax(attn_logits, dim=-1)
+
+        # Zero out nan from fully-padded rows and padding query positions
+        if mask is not None:
+            query_mask = mask.float().unsqueeze(1).unsqueeze(-1)  # [B, 1, L, 1]
+            attn_weights = attn_weights.nan_to_num(0.0) * query_mask
+
+        attn_weights = self.attn_dropout(attn_weights)
 
         out = torch.matmul(attn_weights, V)
         out = out.transpose(1, 2).reshape(B, L, E)
+
+        # Zero padding positions in output before residual
+        if mask is not None:
+            out = out * mask.float().unsqueeze(-1)  # [B, L, 1]
+
         return residual + self.out_proj(out)
 
 
