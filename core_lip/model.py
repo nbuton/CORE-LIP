@@ -401,6 +401,13 @@ class TransformerBlock(nn.Module):
         mask:       [B, L]
         Returns:    (x, x_pairwise) same shapes as input
         """
+        # Zero out padding in pairwise features explicitly
+        # mask: [B, L] → [B, 1, L, 1] and [B, 1, 1, L]
+        if mask is not None:
+            m = mask.float()
+            pairwise_mask = m.unsqueeze(1).unsqueeze(-1) * m.unsqueeze(1).unsqueeze(2)
+            # pairwise_mask: [B, 1, L, L]
+            x_pairwise = x_pairwise * pairwise_mask
         attn_bias = self.pairwise_cnn(x_pairwise)  # [B, H, L, L]
         x = self.attention(x, attn_bias, mask)
         x = self.ffn(x)
@@ -410,16 +417,6 @@ class TransformerBlock(nn.Module):
 # ---------------------------------------------------------------------------
 # 4.  Pooling + classification head
 # ---------------------------------------------------------------------------
-
-
-class MaskedMeanPool(nn.Module):
-    """Average-pools [B, L, E] → [B, E] ignoring padded positions."""
-
-    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        mask = mask.unsqueeze(-1).to(x.dtype)  # [B, L, 1]
-        x = x * mask
-        denom = mask.sum(dim=1).clamp_min(1.0)  # [B, 1]
-        return x.sum(dim=1) / denom  # [B, E]
 
 
 class ClassificationHead(nn.Module):
@@ -487,7 +484,6 @@ class ProteinMultiScaleTransformer(nn.Module):
         )
 
         # ── Pooling + head ────────────────────────────────────────────────
-        self.pool = MaskedMeanPool()
         self.head = ClassificationHead(E, cfg.num_classes, cfg.dropout)
 
     def forward(
@@ -499,6 +495,10 @@ class ProteinMultiScaleTransformer(nn.Module):
         mask: torch.Tensor,
     ) -> torch.Tensor:
         B, L = tokens.shape
+        if mask is not None:
+            m = mask.float()
+            pairwise_mask = m.unsqueeze(1).unsqueeze(-1) * m.unsqueeze(1).unsqueeze(2)
+            x_pairwise = x_pairwise * pairwise_mask
 
         # 1. Build initial [B, L, E] embedding
         x = self.seq_emb(tokens)  # sequence + positional

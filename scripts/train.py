@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from matplotlib import pyplot as plt
 import yaml
 import random
 from pathlib import Path
@@ -162,6 +163,7 @@ def train_one_epoch(
     model,
     loader,
     optimizer,
+    scheduler,
     criterion,
     accumulation_step,
     device,
@@ -187,25 +189,8 @@ def train_one_epoch(
         if not torch.isfinite(logits).all():
             raise RuntimeError(f"Non-finite logits at batch {batch_idx}.")
 
-        # print("-" * 90)
-        # print(y.shape)
-        # print(logits.shape)
-        # print(y.float().mean())
-        # print(y[mask].float().mean())
-        # print(logits.mean())
-        # print(y[0, :10])
-        # print(logits[0, :10])
-        # print(mask[0, :10])
-        # print(mask[0, -10:])
-        # print(mask[1, :10])
-        # print(mask[1, -10:])
         loss_raw = criterion(logits, y.float())
-        # print(loss_raw.shape)
-        # print(loss_raw.mean())
         loss = (loss_raw * mask).sum() / mask.sum() / accumulation_step
-        # print(loss)
-        # print(logits[0].std())
-        # print("-" * 90)
         if not torch.isfinite(loss):
             raise RuntimeError(f"Non-finite loss at batch {batch_idx}.")
         loss.backward()
@@ -216,6 +201,7 @@ def train_one_epoch(
                 raise RuntimeError(f"Non-finite gradient norm at batch {batch_idx}.")
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
+            scheduler.step()
 
         total_loss += loss.item() * y.size(0) * accumulation_step
         total += y.size(0)
@@ -354,14 +340,18 @@ def main():
         train_subset,
         batch_size=train_cfg.batch_size,
         shuffle=True,
-        num_workers=0,
+        num_workers=0,  # 0
+        # persistent_workers=True,
+        pin_memory=False,
         collate_fn=collate_proteins,
     )
     val_loader = DataLoader(
         val_subset,
         batch_size=train_cfg.batch_size,
         shuffle=False,
-        num_workers=0,
+        num_workers=0,  # 0
+        # persistent_workers=True,
+        pin_memory=False,
         collate_fn=collate_proteins,
     )
 
@@ -392,24 +382,34 @@ def main():
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=train_cfg.lr, weight_decay=train_cfg.weigth_decay
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=train_cfg.epochs, eta_min=1e-5
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=train_cfg.lr,
+        epochs=train_cfg.epochs,
+        steps_per_epoch=int(len(train_loader) / train_cfg.accumulation),
+        pct_start=0.1,  # 10% warmup
+        anneal_strategy="cos",
     )
 
     best_val_auc = float("-inf")
-
+    all_train_loss = []
+    all_validation_loss = []
+    all_val_auc = []
     # ── Training Loop (Changed to dot notation) ────────────────────────────────
     for epoch in range(1, train_cfg.epochs + 1):
         train_loss = train_one_epoch(
             model,
             train_loader,
             optimizer,
+            scheduler,
             criterion,
             train_cfg.accumulation,
             device,
         )
-        scheduler.step()
+        all_train_loss.append(train_loss)
         val_loss, val_auc = evaluate(model, val_loader, device)
+        all_validation_loss.append(val_loss)
+        all_val_auc.append(val_auc)
         print(
             f"Epoch {epoch:03d} | train_loss={train_loss:.4f} | "
             f"val_loss={val_loss:.4f} | val_AUC={val_auc:.4f}"
@@ -445,6 +445,21 @@ def main():
     print(f"  ✓ Checkpoint updated with threshold → {model_save_path}")
 
     print(f"\nTraining complete. Best val auc: {best_val_auc:.6f}")
+
+    # Show the loss and metric plot
+    plt.plot(all_train_loss, label="Training loss")
+    plt.plot(all_validation_loss, label="Validation loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.title("Loss evolution during training")
+    plt.legend()
+    plt.show()
+
+    plt.plot(all_val_auc)
+    plt.xlabel("Epochs")
+    plt.ylabel("ROC-AUC")
+    plt.title("Validation auc evolution during training")
+    plt.show()
 
 
 if __name__ == "__main__":
