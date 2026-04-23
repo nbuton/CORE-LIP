@@ -1,6 +1,6 @@
 from pydantic import BaseModel, model_validator
 from pathlib import Path
-from typing import Tuple
+from typing import List, Tuple
 
 
 class ProteinModelConfig(BaseModel):
@@ -14,6 +14,12 @@ class ProteinModelConfig(BaseModel):
     nb_scalar: int = 16
     nb_local: int = 32
     nb_pairwise: int = 8
+    inputs_features: List = [
+        "seq_emb",
+        "scalar_features",
+        "local_features",
+        "pairwise_features",
+    ]
 
     # ── Embedding / model width ───────────────────────────────────────────
     embed_dim: int = 128

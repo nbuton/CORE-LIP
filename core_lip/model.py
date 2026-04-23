@@ -81,9 +81,15 @@ class SequenceEmbedding(nn.Module):
     """
 
     def __init__(
-        self, vocab_size: int, embed_dim: int, max_len: int, dropout: float = 0.1
+        self,
+        vocab_size: int,
+        embed_dim: int,
+        max_len: int,
+        dropout: float = 0.1,
+        only_pos_embedding: bool = False,
     ):
         super().__init__()
+        self.only_pos_embedding = only_pos_embedding
         self.token_emb = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
         self.dropout = nn.Dropout(dropout)
 
@@ -101,7 +107,10 @@ class SequenceEmbedding(nn.Module):
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
         """tokens: [B, L] (int)  →  [B, L, E]"""
         L = tokens.size(1)
-        x = self.token_emb(tokens) + self.pe[:, :L]
+        if self.only_pos_embedding:
+            x = self.pe[:, :L]
+        else:
+            x = self.token_emb(tokens) + self.pe[:, :L]
         return self.dropout(x)
 
 
@@ -296,7 +305,13 @@ class BiasedMultiHeadAttention(nn.Module):
     mask: [B, L]  (1 = real residue, 0 = padding)
     """
 
-    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        dropout: float = 0.1,
+        activate_bias: bool = True,
+    ):
         super().__init__()
         assert embed_dim % num_heads == 0
         self.num_heads = num_heads
@@ -310,6 +325,7 @@ class BiasedMultiHeadAttention(nn.Module):
 
         # One learnable gate per head
         self.bias_gate = nn.Parameter(torch.ones(num_heads) * 0.5)
+        self.activate_bias = activate_bias
 
         self.attn_dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(embed_dim)
@@ -334,7 +350,8 @@ class BiasedMultiHeadAttention(nn.Module):
         V = _proj_reshape(self.v_proj, x)
 
         attn_logits = torch.matmul(Q, K.transpose(-2, -1)) * self.scale
-        attn_logits = attn_logits + self.bias_gate.view(1, H, 1, 1) * bias
+        if self.activate_bias:
+            attn_logits = attn_logits + self.bias_gate.view(1, H, 1, 1) * bias
 
         if mask is not None:
             # Mask padding key positions: [B, 1, 1, L]
@@ -368,8 +385,9 @@ class TransformerBlock(nn.Module):
         3. FeedForwardNetwork — position-wise FFN (E → 2E → E)
     """
 
-    def __init__(self, cfg: ProteinModelConfig):
+    def __init__(self, cfg: ProteinModelConfig, activate_pairwise_bias: bool = True):
         super().__init__()
+        self.activate_pairwise_bias = activate_pairwise_bias
         self.pairwise_cnn = PairwiseCNN(
             nb_pairwise=cfg.nb_pairwise,
             cnn_channels=cfg.pairwise_cnn_channels,
@@ -382,6 +400,7 @@ class TransformerBlock(nn.Module):
             embed_dim=cfg.embed_dim,
             num_heads=cfg.num_heads,
             dropout=cfg.dropout,
+            activate_bias=activate_pairwise_bias,
         )
         self.ffn = FeedForwardNetwork(
             embed_dim=cfg.embed_dim,
@@ -408,7 +427,10 @@ class TransformerBlock(nn.Module):
             pairwise_mask = m.unsqueeze(1).unsqueeze(-1) * m.unsqueeze(1).unsqueeze(2)
             # pairwise_mask: [B, 1, L, L]
             x_pairwise = x_pairwise * pairwise_mask
-        attn_bias = self.pairwise_cnn(x_pairwise)  # [B, H, L, L]
+        if self.activate_pairwise_bias:
+            attn_bias = self.pairwise_cnn(x_pairwise)  # [B, H, L, L]
+        else:
+            attn_bias = None
         x = self.attention(x, attn_bias, mask)
         x = self.ffn(x)
         return x
@@ -462,10 +484,12 @@ class ProteinMultiScaleTransformer(nn.Module):
         super().__init__()
         self.cfg = cfg
         E = cfg.embed_dim
+        self.inputs_features = cfg.inputs_features
 
         # ── Input embeddings ──────────────────────────────────────────────
+        only_pos_embedding = "seq_emb" not in self.inputs_features
         self.seq_emb = SequenceEmbedding(
-            cfg.vocab_size, E, cfg.max_seq_len, cfg.dropout
+            cfg.vocab_size, E, cfg.max_seq_len, cfg.dropout, only_pos_embedding
         )
         self.local_proj = LocalFeatureProjector(
             cfg.nb_local, E, cfg.local_mlp_hidden, cfg.dropout
@@ -479,8 +503,12 @@ class ProteinMultiScaleTransformer(nn.Module):
         self.embed_norm = nn.LayerNorm(E)
 
         # ── Transformer blocks ────────────────────────────────────────────
+        activate_pairwise_bias = "pairwise_features" in self.inputs_features
         self.blocks = nn.ModuleList(
-            [TransformerBlock(cfg) for _ in range(cfg.num_blocks)]
+            [
+                TransformerBlock(cfg, activate_pairwise_bias)
+                for _ in range(cfg.num_blocks)
+            ]
         )
 
         # ── Pooling + head ────────────────────────────────────────────────
@@ -502,9 +530,12 @@ class ProteinMultiScaleTransformer(nn.Module):
 
         # 1. Build initial [B, L, E] embedding
         x = self.seq_emb(tokens)  # sequence + positional
-        x = x + self.local_proj(x_local)  # add per-residue local
-        x = x + self.scalar_proj(x_scalar, L)  # add broadcast global scalar
-        x = x + self.pairwise_init_proj(x_pairwise)  # add pairwise context
+        if "scalar_features" in self.inputs_features:
+            x = x + self.scalar_proj(x_scalar, L)  # add broadcast global scalar
+        if "local_features" in self.inputs_features:
+            x = x + self.local_proj(x_local)  # add per-residue local
+        if "pairwise_features" in self.inputs_features:
+            x = x + self.pairwise_init_proj(x_pairwise)  # add pairwise context
         x = self.embed_norm(x)
 
         # 2. Transformer blocks
