@@ -32,10 +32,10 @@ from core_lip import (
     prepare_data,
     read_protein_data,
 )
-from core_lip.features import LOCAL_FEATURES, PAIRWISE_FEATURES, SCALAR_FEATURES
-from core_lip.loss import FocalLoss
-from core_lip.metrics import analyze_scalar_list, evaluate, select_threshold_cv
-from core_lip.trainer import get_config, set_seed, train_one_epoch
+from core_lip.data.features import LOCAL_FEATURES, PAIRWISE_FEATURES, SCALAR_FEATURES
+from core_lip.engine.loss import FocalLoss
+from core_lip.eval.metrics import analyze_scalar_list, evaluate, select_threshold_cv
+from core_lip.engine.trainer import get_config, set_seed, train_one_epoch
 from core_lip.utils import cluster_sequences_mmseqs2, get_all_feature_stats
 
 import argparse

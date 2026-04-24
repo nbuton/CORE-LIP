@@ -35,7 +35,7 @@ from sklearn.metrics import (
 )
 
 from core_lip.evaluation import ResidueExample, parse_prediction_csv, parse_truth_file
-from core_lip.plotting import plot_metrics_bar, plot_pr_curves, plot_roc_curves
+from core_lip.eval.plotting import plot_metrics_bar, plot_pr_curves, plot_roc_curves
 
 # ---------------------------------------------------------------------------
 # Residue-level metrics

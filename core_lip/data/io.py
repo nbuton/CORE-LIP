@@ -1,35 +1,41 @@
 """
-CORE-LIP — Data preparation and I/O utilities
-=============================================
+core_lip/data/io.py
+-------------------
+Data preparation, parsing, feature extraction, and I/O utilities.
 """
+
+from __future__ import annotations
+
+import csv
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
 import torch
-from core_lip.datasets import AA_TO_INT
+from sklearn.preprocessing import StandardScaler
+
+# Adjust this import based on your exact structure
+from core_lip.data.datasets import AA_TO_INT
+from core_lip.eval.structures import ResidueExample
+
+# Allow reading large CSV fields for massive protein sequences
+csv.field_size_limit(sys.maxsize)
 
 
-# ---------------------------------------------------------------------------
-# I/O helpers
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 1. Dataset I/O (FASTA-like & CLIP format)
+# ===========================================================================
 
 
-def read_protein_data(file_path: str) -> pd.DataFrame:
-    """
-    Read the CLIP-format dataset file.
-
-    Expected format (3 lines per protein, no blank separator):
-        >PROTEIN_ID
-        AMINO_ACID_SEQUENCE
-        LIP_ANNOTATION_BINARY_STRING   (e.g. "00011100")
-
-    Returns
-    -------
-    pd.DataFrame with columns: protein_id, sequence, LIP_annotations
-    """
+def read_protein_data(file_path: str | Path) -> pd.DataFrame:
+    """Read a CLIP-format dataset file into a DataFrame."""
     data = []
-    with open(file_path, "r") as f:
+    with open(file_path, "r", encoding="utf-8") as f:
         while True:
             line1 = f.readline().strip()
             if not line1:
@@ -48,22 +54,16 @@ def read_protein_data(file_path: str) -> pd.DataFrame:
 
 
 def filter_protein_file(
-    input_path: str,
+    input_path: str | Path,
     protein_ids: list[str],
-    output_path: str,
+    output_path: str | Path,
 ) -> None:
-    """
-    Write a subset of a CLIP-format file, keeping only the given protein IDs.
-
-    Parameters
-    ----------
-    input_path  : source CLIP-format file
-    protein_ids : list of IDs to retain
-    output_path : destination file
-    """
+    """Write a subset of a CLIP-format file, keeping only the given protein IDs."""
     target_ids = {f">{pid.strip()}" for pid in protein_ids}
 
-    with open(input_path, "r") as infile, open(output_path, "w") as outfile:
+    with open(input_path, "r", encoding="utf-8") as infile, open(
+        output_path, "w", encoding="utf-8"
+    ) as outfile:
         while True:
             header = infile.readline()
             sequence = infile.readline()
@@ -78,9 +78,104 @@ def filter_protein_file(
     print(f"Filtered file saved to: {output_path}")
 
 
-# ---------------------------------------------------------------------------
-# Feature extraction
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 2. Evaluation Parsers (Truth & Predictions)
+# ===========================================================================
+
+
+def _read_blocks(path: str | Path) -> List[List[str]]:
+    """Split a FASTA-like file into header+body blocks."""
+    blocks: List[List[str]] = []
+    current: List[str] = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                if current:
+                    blocks.append(current)
+                current = [line]
+            else:
+                current.append(line)
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def _parse_binary_string(s: str) -> np.ndarray:
+    return np.fromiter((1 if c == "1" else 0 for c in s.strip()), dtype=np.int8)
+
+
+def _parse_prob_string(s: str) -> np.ndarray:
+    s = s.strip().strip('"')
+    if not s:
+        return np.array([], dtype=np.float64)
+    return np.array([float(x) for x in s.split(",") if x], dtype=np.float64)
+
+
+def _parse_binary_csv_string(s: str) -> np.ndarray:
+    s = s.strip().strip('"')
+    if not s:
+        return np.array([], dtype=np.int8)
+    return np.array([int(x) for x in s.split(",") if x], dtype=np.int8)
+
+
+def parse_truth_file(path: str | Path) -> Dict[str, ResidueExample]:
+    """Parse a FASTA-like ground-truth file into ResidueExample objects."""
+    records: Dict[str, ResidueExample] = {}
+    for block in _read_blocks(path):
+        if len(block) < 3:
+            raise ValueError(f"Malformed truth block (expected ≥3 lines): {block}")
+        protein_id = block[0][1:].strip()
+        sequence = block[1].strip()
+        y_true = _parse_binary_string("".join(block[2:]).strip())
+        if len(sequence) != len(y_true):
+            raise ValueError(
+                f"Length mismatch for {protein_id}: seq={len(sequence)}, labels={len(y_true)}"
+            )
+        records[protein_id] = ResidueExample(protein_id, sequence, y_true)
+    return records
+
+
+def parse_prediction_csv(
+    path: str | Path,
+    records: Dict[str, ResidueExample],
+    model_name: str,
+) -> None:
+    """Load per-residue predictions from a CSV into existing ResidueExample objects."""
+    required = {"protein_id", "length", "predictions", "binary_predictions"}
+    with open(path, "r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        if not required.issubset(set(reader.fieldnames or [])):
+            raise ValueError(
+                f"CSV must contain columns {sorted(required)}; got {reader.fieldnames}"
+            )
+        for row in reader:
+            pid = row["protein_id"].strip()
+            if pid not in records:
+                continue
+            expected_len = int(row["length"])
+            scores = _parse_prob_string(row["predictions"])
+            binary = _parse_binary_csv_string(row["binary_predictions"])
+
+            if len(scores) != expected_len or len(binary) != expected_len:
+                raise ValueError(
+                    f"Length mismatch for {pid} in {path}: expected {expected_len}, "
+                    f"got scores={len(scores)}, binary={len(binary)}"
+                )
+            records[pid].add_prediction(model_name, scores, binary)
+
+    missing = [pid for pid in records if model_name not in records[pid].scores]
+    if missing:
+        raise ValueError(
+            f"Model '{model_name}' missing predictions for {len(missing)} proteins."
+        )
+
+
+# ===========================================================================
+# 3. Feature Extraction & Statistics
+# ===========================================================================
 
 
 def prepare_data(
@@ -91,47 +186,21 @@ def prepare_data(
     pairwise_features: list[str],
     aa_to_int_dict: dict[str, int] = AA_TO_INT,
 ):
-    """
-    Extract and organise features from an HDF5 file for all proteins in *df*.
-
-    Parameters
-    ----------
-    df               : DataFrame from read_protein_data()
-    h5_data          : open h5py.File object with pre-computed MD properties
-    scalar_features  : list of scalar (per-protein) feature names
-    local_features   : list of per-residue feature names
-    pairwise_features: list of pairwise (L×L) feature names
-    aa_to_int_dict   : amino-acid → integer vocabulary
-
-    Returns
-    -------
-    X_scalar_list   : list of (nb_scalar,)         float32 arrays
-    X_local_list    : list of (nb_local, L)         float32 arrays
-    X_pairwise_list : list of (nb_pairwise, L, L)   float32 arrays
-    seq_enc_list    : list of (L,)                  int64 arrays
-    y_list          : list of (L,)                  int arrays
-    list_ids        : list of protein ID strings
-    """
+    """Extract and organise features from an HDF5 file for all proteins in df."""
     list_ids, X_scalar_list, X_local_list = [], [], []
     X_pairwise_list, seq_enc_list, y_list = [], [], []
 
     for _, row in df.iterrows():
         pid = row["protein_id"]
 
-        # Sequence encoding
         seq_enc = np.array(
             [aa_to_int_dict.get(aa, 0) for aa in row["sequence"]], dtype=np.int64
         )
-
-        # Scalar features: shape (nb_scalar,)
         scalar_feats = np.array(
             [h5_data[pid][f][()] for f in scalar_features], dtype=np.float32
         )
-
-        # Local features: shape (nb_local, L)
         local_feats = np.stack([h5_data[pid][f][()] for f in local_features], axis=0)
 
-        # Pairwise features: shape (nb_pairwise, L, L)
         if pairwise_features:
             pairwise_feats = np.stack(
                 [h5_data[pid][f][()] for f in pairwise_features], axis=0
@@ -139,7 +208,6 @@ def prepare_data(
         else:
             pairwise_feats = np.empty((0,), dtype=np.float32)
 
-        # Labels: "00011" → [0, 0, 0, 1, 1]
         labels = np.array([int(c) for c in row["LIP_annotations"]])
 
         X_scalar_list.append(scalar_feats)
@@ -153,15 +221,10 @@ def prepare_data(
 
 
 def get_all_feature_stats(X_scalar_list, X_local_list, X_pairwise_list):
-    """
-    Computes means and stds for Scalar, Local, and Pairwise features.
-
-    Returns:
-        Dict of { 'means': Tensor, 'stds': Tensor } for each type.
-    """
+    """Computes means and stds for Scalar, Local, and Pairwise features."""
     stats = {}
 
-    # --- 1. Scalar Stats: Shape (N, nb_scalar) ---
+    # Scalar Stats
     X_scalar_matrix = np.stack(X_scalar_list)
     s_scaler = StandardScaler().fit(X_scalar_matrix)
     stats["scalar"] = {
@@ -169,9 +232,7 @@ def get_all_feature_stats(X_scalar_list, X_local_list, X_pairwise_list):
         "stds": torch.from_numpy(s_scaler.scale_).float(),
     }
 
-    # --- 2. Local Stats: List of (nb_local, L) ---
-    # We must flatten all L dimensions across all proteins
-    # Resulting shape for fit: (Total_Residues_in_Dataset, nb_local)
+    # Local Stats
     X_local_flat = np.concatenate([arr.T for arr in X_local_list], axis=0)
     l_scaler = StandardScaler().fit(X_local_flat)
     stats["local"] = {
@@ -179,11 +240,8 @@ def get_all_feature_stats(X_scalar_list, X_local_list, X_pairwise_list):
         "stds": torch.from_numpy(l_scaler.scale_).float(),
     }
 
-    # --- 3. Pairwise Stats: List of (nb_pairwise, L, L) ---
-    # We flatten both L dimensions: (nb_pairwise, L*L)
-    # Resulting shape for fit: (Total_Pairs_in_Dataset, nb_pairwise)
+    # Pairwise Stats
     if X_pairwise_list and X_pairwise_list[0].size > 0:
-        # Move nb_features to the last dim and flatten spatial dims
         X_pair_flat = np.concatenate(
             [
                 arr.transpose(1, 2, 0).reshape(-1, arr.shape[0])
@@ -202,10 +260,9 @@ def get_all_feature_stats(X_scalar_list, X_local_list, X_pairwise_list):
     return stats
 
 
-import os
-import subprocess
-import tempfile
-import pandas as pd
+# ===========================================================================
+# 4. Clustering (External Tool Dispatch)
+# ===========================================================================
 
 
 def cluster_sequences_mmseqs2(
@@ -215,19 +272,7 @@ def cluster_sequences_mmseqs2(
     output_file: str = "data/TR1000_cluster.csv",
     seq_identity: float = 0.25,
 ) -> pd.DataFrame:
-    """
-    Cluster sequences using MMseqs2 at a given sequence identity threshold.
-
-    Args:
-        df: DataFrame with at least a sequence and an id column.
-        sequence_col: Name of the column containing sequences.
-        id_col: Name of the column containing sequence identifiers.
-        output_file: Path to the output CSV file.
-        seq_identity: Sequence identity threshold for clustering (default 0.25).
-
-    Returns:
-        DataFrame with columns [id_col, sequence_col, 'cluster'].
-    """
+    """Cluster sequences using MMseqs2 at a given sequence identity threshold."""
     if os.path.exists(output_file):
         print(f"[clustering] {output_file} already exists, loading it.")
         return pd.read_csv(output_file)
@@ -241,23 +286,14 @@ def cluster_sequences_mmseqs2(
         tmp_path = os.path.join(tmpdir, "tmp")
         tsv_path = os.path.join(tmpdir, "clusters.tsv")
 
-        # Write FASTA
-        with open(fasta_path, "w") as f:
+        with open(fasta_path, "w", encoding="utf-8") as f:
             for _, row in df.iterrows():
                 f.write(f">{row[id_col]}\n{row[sequence_col]}\n")
 
-        # Create MMseqs2 DB
         subprocess.run(
-            ["mmseqs", "createdb", fasta_path, db_path],
-            check=True,
-            capture_output=True,
+            ["mmseqs", "createdb", fasta_path, db_path], check=True, capture_output=True
         )
 
-        # Cluster at given seq identity
-        # --min-seq-id   : sequence identity threshold
-        # -c 0.8         : coverage threshold
-        # --cov-mode 0   : coverage of both query and target
-        # --cluster-mode 1: connected component clustering (better for low identity)
         subprocess.run(
             [
                 "mmseqs",
@@ -280,7 +316,6 @@ def cluster_sequences_mmseqs2(
             capture_output=True,
         )
 
-        # Convert cluster DB to TSV (representative \t member)
         subprocess.run(
             ["mmseqs", "createtsv", db_path, db_path, cluster_db, tsv_path],
             check=True,
@@ -294,12 +329,10 @@ def cluster_sequences_mmseqs2(
             names=["cluster_representative", id_col],
         )
 
-    # Map representative id → integer cluster index
     reps = cluster_df["cluster_representative"].unique()
     rep_to_idx = {rep: idx for idx, rep in enumerate(reps)}
     cluster_df["cluster"] = cluster_df["cluster_representative"].map(rep_to_idx)
 
-    # Merge with original df to get sequences
     result = df[[id_col, sequence_col]].merge(
         cluster_df[[id_col, "cluster"]], on=id_col, how="left"
     )

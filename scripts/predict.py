@@ -21,7 +21,7 @@ from pathlib import Path
 import h5py
 import torch
 
-from core_lip.predictor import load_checkpoint, predict_dataset
+from core_lip.engine.predictor import load_checkpoint, predict_dataset
 
 
 def main() -> None:

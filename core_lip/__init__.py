@@ -8,8 +8,11 @@ multi-scale Transformer that integrates sequence, per-residue, global scalar,
 and pairwise conformational features derived from MD trajectories.
 """
 
-from core_lip.model import ProteinModelConfig, ProteinMultiScaleTransformer
-from core_lip.datasets import (
+from core_lip.engine.protein_multi_scale_transformer import (
+    ProteinModelConfig,
+    ProteinMultiScaleTransformer,
+)
+from core_lip.data.datasets import (
     AA_TO_INT,
     ProteinDataset,
     ProteinInferenceDataset,

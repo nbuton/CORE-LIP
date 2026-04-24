@@ -17,8 +17,8 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from core_lip.datasets import ProteinDataset, collate_proteins
-from core_lip.model import ProteinMultiScaleTransformer
+from core_lip.data.datasets import ProteinDataset, collate_proteins
+from core_lip.engine.protein_multi_scale_transformer import ProteinMultiScaleTransformer
 from core_lip import prepare_data, read_protein_data
 
 

@@ -20,4 +20,4 @@ class FocalLoss(nn.Module):
             return loss.mean()
         elif self.reduction == "sum":
             return loss.sum()
-        return loss  # "none" — keeps same shape as BCEWithLogitsLoss for your existing code
+        return loss  # "none" - keeps same shape as BCEWithLogitsLoss
