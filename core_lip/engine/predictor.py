@@ -131,6 +131,8 @@ def predict_dataset(
         x_pairwise_pad = x_pairwise_pad.to(device)
         tokens = seq_pad.long().to(device)
         mask = mask.to(device)
+        if plm_pad is not None:
+            plm_pad = plm_pad.to(device)
 
         logits = model(tokens, x_scalar_pad, x_local_pad, x_pairwise_pad, mask, plm_pad)
 

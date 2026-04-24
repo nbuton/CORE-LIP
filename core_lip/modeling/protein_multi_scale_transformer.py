@@ -213,8 +213,6 @@ class PairwiseContextProjector(nn.Module):
         self,
         nb_pairwise: int,
         embed_dim: int,
-        means: torch.Tensor,
-        stds: torch.Tensor,
         dropout: float = 0.1,
         window_size: int = 1024,
     ):
@@ -222,9 +220,7 @@ class PairwiseContextProjector(nn.Module):
         self.E = embed_dim
         self.half = window_size // 2
         self.window = window_size  # fixed window, independent of embed_dim
-        self.scaler = LearnedScalarNorm(
-            nb_pairwise, initial_means=means, initial_stds=stds
-        )
+
         in_dim = nb_pairwise * (self.window + 1)
         self.mlp = MLP2(in_dim, embed_dim, embed_dim, dropout)
 
@@ -251,9 +247,7 @@ class PairwiseContextProjector(nn.Module):
     def forward(self, x_pairwise: torch.Tensor) -> torch.Tensor:
         """x_pairwise: [B, C, L, L]  →  [B, L, E]"""
         B, C, L, _ = x_pairwise.shape
-        x = x_pairwise.permute(0, 2, 3, 1)  # [B, L, L, C]
-        x_scaled = self.scaler(x)
-        x_scaled = x_scaled.permute(0, 3, 1, 2)  # [B, C, L, L] back for extraction
+
         windows = self._extract_windows(x_pairwise)  # [B, L, C, window+1]
         flat = windows.reshape(B, L, C * (self.window + 1))
         return self.mlp(flat)  # [B, L, E]
@@ -566,10 +560,13 @@ class ProteinMultiScaleTransformer(nn.Module):
         self.pairwise_init_proj = PairwiseContextProjector(
             cfg.nb_pairwise,
             E,
-            stats["pairwise"]["means"],
-            stats["pairwise"]["stds"],
             cfg.dropout,
             cfg.window_size_pairwise_input,
+        )
+        self.pair_wise_scaler = LearnedScalarNorm(
+            cfg.nb_pairwise,
+            initial_means=stats["pairwise"]["means"],
+            initial_stds=stats["pairwise"]["stds"],
         )
         self.embed_norm = nn.LayerNorm(E)
 
@@ -596,6 +593,12 @@ class ProteinMultiScaleTransformer(nn.Module):
             pairwise_mask = m.unsqueeze(1).unsqueeze(-1) * m.unsqueeze(1).unsqueeze(2)
             x_pairwise = x_pairwise * pairwise_mask
 
+        x_pairwise_permute = x_pairwise.permute(0, 2, 3, 1)  # [B, L, L, C]
+        x_pairwise_permute_scaled = self.pair_wise_scaler(x_pairwise_permute)
+        x_pairwise_scaled = x_pairwise_permute_scaled.permute(
+            0, 3, 1, 2
+        )  # [B, C, L, L] back for extraction
+
         # 1. Build initial [B, L, E] embedding
         x = self.seq_emb(tokens)  # sequence + positional
 
@@ -606,7 +609,7 @@ class ProteinMultiScaleTransformer(nn.Module):
             x = x + self.local_proj(x_local)
 
         if "pairwise_features" in self.inputs_features:
-            x = x + self.pairwise_init_proj(x_pairwise)
+            x = x + self.pairwise_init_proj(x_pairwise_scaled)
 
         # 🟢 NEW: Add projected PLM embeddings if provided and activated
         if "plm_embedding" in self.inputs_features and plm_pad is not None:
@@ -616,7 +619,7 @@ class ProteinMultiScaleTransformer(nn.Module):
 
         # 2. Transformer blocks
         for block in self.blocks:
-            x = block(x, x_pairwise, mask)
+            x = block(x, x_pairwise_scaled, mask)
 
         # 3. Classification head
         return self.head(x)

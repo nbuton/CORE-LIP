@@ -98,7 +98,19 @@ class CORE_LIP_Trainer:
                 df, h5, SCALAR_FEATURES, LOCAL_FEATURES, PAIRWISE_FEATURES
             )
 
-        self.dataset = ProteinDataset(X_scalar, X_local, X_pairwise, seqs, y_list)
+        self.dataset = ProteinDataset(
+            X_scalar,
+            X_local,
+            X_pairwise,
+            seqs,
+            y_list,
+            ids=ids,
+            plm_h5_path=(
+                self.train_cfg.plm_h5_path
+                if hasattr(self.train_cfg, "data/embeddings/esm3-large-2024-03.h5")
+                else None
+            ),
+        )
         self.stats = get_all_feature_stats(X_scalar, X_local, X_pairwise)
         self.y_list = y_list  # Keep for loss weight calculation
 

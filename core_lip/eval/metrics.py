@@ -70,8 +70,9 @@ def evaluate(
         total_batch += y.size(0)
 
         # Collect valid (non-padded) residues only
-        y_true_all.append(y[mask == 1].cpu())
-        y_score_all.append(logits[mask == 1].cpu())
+        valid = mask.bool()
+        y_true_all.append(y[valid].cpu())
+        y_score_all.append(logits[valid].cpu())
 
     avg_loss = total_loss / max(total_batch, 1)
 
