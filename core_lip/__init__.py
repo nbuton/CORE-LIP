@@ -13,7 +13,6 @@ __all__ = [
     "ProteinMultiScaleTransformer",
     "AA_TO_INT",
     "ProteinDataset",
-    "ProteinInferenceDataset",
     "collate_proteins",
     "collate_inference",
     "protein_label_from_residue_labels",

@@ -525,18 +525,6 @@ class ClassificationHead(nn.Module):
 class ProteinMultiScaleTransformer(nn.Module):
     """
     CORE-LIP: multi-scale protein representation model for LIP prediction.
-
-    Inputs
-    ------
-    tokens    : [B, L]                  amino-acid token IDs
-    x_scalar  : [B, nb_scalar]          per-protein global conformational features
-    x_local   : [B, nb_local, L]        per-residue local features
-    x_pairwise: [B, nb_pairwise, L, L]  pairwise residue features
-    mask      : [B, L]                  1 for real residue, 0 for padding
-
-    Output
-    ------
-    logits    : [B, num_classes]
     """
 
     def __init__(self, cfg: ProteinModelConfig, stats):
@@ -550,6 +538,15 @@ class ProteinMultiScaleTransformer(nn.Module):
         self.seq_emb = SequenceEmbedding(
             cfg.vocab_size, E, cfg.max_seq_len, cfg.dropout, only_pos_embedding
         )
+        # Assuming cfg contains 'plm_dim' (e.g., 1280 for ESM-2 or 1536 for ESM-3)
+        if "plm_embedding" in self.inputs_features:
+            self.plm_proj = nn.Sequential(
+                nn.Linear(cfg.plm_dim, E),
+                nn.GELU(),
+                nn.Linear(E, E),
+                nn.Dropout(cfg.dropout),
+            )
+
         self.scalar_proj = ScalarFeatureProjector(
             cfg.nb_scalar,
             E,
@@ -591,6 +588,7 @@ class ProteinMultiScaleTransformer(nn.Module):
         x_local: torch.Tensor,
         x_pairwise: torch.Tensor,
         mask: torch.Tensor,
+        plm_pad: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, L = tokens.shape
         if mask is not None:
@@ -600,12 +598,20 @@ class ProteinMultiScaleTransformer(nn.Module):
 
         # 1. Build initial [B, L, E] embedding
         x = self.seq_emb(tokens)  # sequence + positional
+
         if "scalar_features" in self.inputs_features:
-            x = x + self.scalar_proj(x_scalar, L)  # add broadcast global scalar
+            x = x + self.scalar_proj(x_scalar, L)
+
         if "local_features" in self.inputs_features:
-            x = x + self.local_proj(x_local)  # add per-residue local
+            x = x + self.local_proj(x_local)
+
         if "pairwise_features" in self.inputs_features:
-            x = x + self.pairwise_init_proj(x_pairwise)  # add pairwise context
+            x = x + self.pairwise_init_proj(x_pairwise)
+
+        # 🟢 NEW: Add projected PLM embeddings if provided and activated
+        if "plm_embedding" in self.inputs_features and plm_pad is not None:
+            x = x + self.plm_proj(plm_pad)
+
         x = self.embed_norm(x)
 
         # 2. Transformer blocks
@@ -613,7 +619,7 @@ class ProteinMultiScaleTransformer(nn.Module):
             x = block(x, x_pairwise, mask)
 
         # 3. Classification head
-        return self.head(x)  # [B, L,  num_classes]
+        return self.head(x)
 
 
 # ---------------------------------------------------------------------------
@@ -640,8 +646,9 @@ if __name__ == "__main__":
     x_pairwise = torch.randn(B, cfg.nb_pairwise, L, L)
     mask = torch.ones(B, L)
     mask[0, 40:] = 0
+    plm_pad = None
 
-    logits = model(tokens, x_scalar, x_local, x_pairwise, mask)
+    logits = model(tokens, x_scalar, x_local, x_pairwise, mask, plm_pad)
     print("Output shape:", logits.shape)  # expect [2, 2]
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {n_params:,}")

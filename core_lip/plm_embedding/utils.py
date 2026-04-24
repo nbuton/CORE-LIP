@@ -295,6 +295,8 @@ class ESMForgeWrapper(ESMBaseWrapper):
         )
 
     def get_embedding(self, sequence):
+        if len(sequence) > 2048:
+            return torch.zeros((len(sequence), 2560))
         protein = ESMProtein(sequence=sequence)
         t = self.client.encode(protein)
         out = self.client.logits(

@@ -46,6 +46,9 @@ class ProteinModelConfig(BaseModel):
     local_mlp_hidden: int = -1
     scalar_mlp_hidden: int = -1
 
+    # Add pre trainned embeddings
+    plm_dim: int = 2560
+
     # ── Post-Initialization & Validation ──────────────────────────────────
     @model_validator(mode="after")
     def validate_and_set_defaults(self) -> "ProteinModelConfig":

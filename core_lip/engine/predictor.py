@@ -117,14 +117,22 @@ def predict_dataset(
         best_thr: float = checkpoint["best_threshold"]
     rows: list[dict] = []
 
-    for x_scalar_pad, x_local_pad, x_pairwise_pad, seq_pad, mask, protein_ids in loader:
+    for (
+        x_scalar_pad,
+        x_local_pad,
+        x_pairwise_pad,
+        seq_pad,
+        mask,
+        protein_ids,
+        plm_pad,
+    ) in loader:
         x_scalar_pad = x_scalar_pad.to(device)
         x_local_pad = x_local_pad.to(device)
         x_pairwise_pad = x_pairwise_pad.to(device)
         tokens = seq_pad.long().to(device)
         mask = mask.to(device)
 
-        logits = model(tokens, x_scalar_pad, x_local_pad, x_pairwise_pad, mask)
+        logits = model(tokens, x_scalar_pad, x_local_pad, x_pairwise_pad, mask, plm_pad)
 
         # Normalise shape: [B, L, 1] → [B, L]
         if logits.dim() == 3 and logits.size(-1) == 1:

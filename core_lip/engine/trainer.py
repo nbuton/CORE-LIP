@@ -190,6 +190,10 @@ class CORE_LIP_Trainer:
         else:
             raise ValueError(f"Unknown loss: {loss_type}")
 
+        print(
+            f"Initialized {loss_type} for imbalanced ranking (pos_ratio: {total_pos/(total_pos+total_neg):.2%})"
+        )
+
     def save_checkpoint(self, auc=None, is_final=False):
         save_dict = {
             "model_state_dict": self.model.state_dict(),
@@ -248,12 +252,19 @@ class CORE_LIP_Trainer:
                 )
                 self.history["val_loss"].append(v_loss)
                 self.history["val_auc"].append(v_auc)
-                log_str += f" | val_loss={v_loss:.4f} | val_AUC={v_auc:.4f}"
 
+                # Restoration of ROC-AUC and PR-AUC labels
+                log_str += f" | val_loss={v_loss:.4f} | val_ROC-AUC={v_auc:.4f} | val_PR-AUC={v_pr:.4f}"
                 print(log_str)
+
                 if v_auc > best_auc:
                     best_auc = v_auc
                     self.save_checkpoint(auc=best_auc)
+                else:
+                    # Restoration of the "did not improve" notification
+                    print(
+                        f"  - Validation AUC did not improve, checkpoint not updated."
+                    )
             else:
                 print(log_str)
                 # If no validation, save the model at the last epoch
@@ -261,7 +272,9 @@ class CORE_LIP_Trainer:
                     self.save_checkpoint(is_final=True)
 
         # Post-training: Threshold selection
-        checkpoint = torch.load(self.model_save_path, map_location=self.device)
+        checkpoint = torch.load(
+            self.model_save_path, map_location=self.device, weights_only=False
+        )
         self.model.load_state_dict(checkpoint["model_state_dict"])
         best_thr = select_threshold_cv(
             self.model, self.train_loader, self.device, seed=self.train_cfg.seed
@@ -308,7 +321,7 @@ def train_one_epoch(
     total_loss, total = 0.0, 0
     optimizer.zero_grad(set_to_none=True)
 
-    for batch_idx, (x_scalar, x_local, x_pairwise, seq, mask, y) in tqdm(
+    for batch_idx, (x_scalar, x_local, x_pairwise, seq, mask, y, plm_pad) in tqdm(
         enumerate(loader), total=len(loader)
     ):
         x_scalar = x_scalar.to(device)
@@ -318,7 +331,7 @@ def train_one_epoch(
         mask = mask.to(device)
         y = y.to(device)
 
-        logits = model(tokens, x_scalar, x_local, x_pairwise, mask)
+        logits = model(tokens, x_scalar, x_local, x_pairwise, mask, plm_pad)
         logits = logits.squeeze(-1)  # [batch, length]
 
         if not torch.isfinite(logits).all():

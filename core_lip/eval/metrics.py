@@ -48,7 +48,7 @@ def evaluate(
     total_loss, total_batch = 0.0, 0
     y_true_all, y_score_all = [], []
 
-    for x_scalar, x_local, x_pairwise, seq, mask, y in loader:
+    for x_scalar, x_local, x_pairwise, seq, mask, y, plm_pad in loader:
         x_scalar, x_local, x_pairwise = (
             x_scalar.to(device),
             x_local.to(device),
@@ -58,7 +58,7 @@ def evaluate(
         mask = mask.to(device)
         y = y.to(device)
 
-        logits = model(tokens, x_scalar, x_local, x_pairwise, mask)
+        logits = model(tokens, x_scalar, x_local, x_pairwise, mask, plm_pad)
         logits = logits.squeeze(-1)  # [batch, length]
 
         loss_raw = criterion(logits, y.float())
@@ -124,7 +124,7 @@ def select_threshold_cv(
     all_labels: list[np.ndarray] = []
 
     with torch.no_grad():
-        for x_scalar, x_local, x_pairwise, seq, mask, y in tqdm(
+        for x_scalar, x_local, x_pairwise, seq, mask, y, plm_pad in tqdm(
             loader, desc="Collecting scores"
         ):
             x_scalar, x_local, x_pairwise = (
@@ -136,7 +136,7 @@ def select_threshold_cv(
             mask = mask.to(device)
             y = y.to(device)
 
-            logits = model(tokens, x_scalar, x_local, x_pairwise, mask)
+            logits = model(tokens, x_scalar, x_local, x_pairwise, mask, plm_pad)
             logits = logits.squeeze(-1)
             probs = torch.sigmoid(logits)
 

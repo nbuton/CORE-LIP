@@ -11,6 +11,8 @@ def main() -> None:
     cfg = get_config(args.config)
 
     trainer = CORE_LIP_Trainer(cfg, args.config, device=args.device)
+    print(f"Config: {args.config}")
+    print(f"Device: {args.device}")
     trainer.run()
     trainer.plot()
 
