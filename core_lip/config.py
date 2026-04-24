@@ -70,6 +70,7 @@ class TrainingConfig(BaseModel):
     accumulation: int
     loss_type: str
     loss_params: Dict[str, Any] = {}
+    val_prop: float
     lr: float
     weight_decay: float
     seed: int

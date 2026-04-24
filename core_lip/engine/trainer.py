@@ -104,7 +104,7 @@ class CORE_LIP_Trainer:
         self.y_list = y_list  # Keep for loss weight calculation
 
         # Handle split
-        val_prop = getattr(self.train_cfg, "val_prop", 0.1)
+        val_prop = self.train_cfg.val_prop
 
         if val_prop <= 0:
             print("[split] val_prop is 0. Using full dataset for training.")
