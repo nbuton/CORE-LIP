@@ -19,152 +19,23 @@ Usage
 from __future__ import annotations
 
 import argparse
-import csv
-import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 import numpy as np
-from matplotlib.lines import Line2D
 from sklearn.metrics import (
     average_precision_score,
     brier_score_loss,
     f1_score,
     matthews_corrcoef,
-    precision_recall_curve,
     precision_score,
     recall_score,
     roc_auc_score,
-    roc_curve,
 )
 
-csv.field_size_limit(sys.maxsize)
-
-# ---------------------------------------------------------------------------
-# Data structures
-# ---------------------------------------------------------------------------
-
-
-class ResidueExample:
-    def __init__(self, protein_id: str, sequence: str, y_true: np.ndarray):
-        self.protein_id = protein_id
-        self.sequence = sequence
-        self.y_true = y_true  # per-residue ground truth (int8)
-        self.scores: Dict[str, np.ndarray] = {}  # per-residue continuous scores
-        self.binary: Dict[str, np.ndarray] = {}  # per-residue binary predictions
-
-    def add_prediction(
-        self, model_name: str, scores: np.ndarray, binary: np.ndarray
-    ) -> None:
-        n = len(self.sequence)
-        for arr, label in [(scores, "scores"), (binary, "binary")]:
-            if len(arr) != n:
-                raise ValueError(
-                    f"Length mismatch for {self.protein_id} / {model_name} "
-                    f"({label}): seq={n}, pred={len(arr)}"
-                )
-        self.scores[model_name] = scores
-        self.binary[model_name] = binary
-
-
-# ---------------------------------------------------------------------------
-# Parsers
-# ---------------------------------------------------------------------------
-
-
-def _read_blocks(path: str | Path) -> List[List[str]]:
-    blocks, current = [], []
-    with open(path, "r", encoding="utf-8") as f:
-        for raw in f:
-            line = raw.strip()
-            if not line:
-                continue
-            if line.startswith(">"):
-                if current:
-                    blocks.append(current)
-                current = [line]
-            else:
-                current.append(line)
-    if current:
-        blocks.append(current)
-    return blocks
-
-
-def _parse_binary_string(s: str) -> np.ndarray:
-    return np.fromiter((1 if c == "1" else 0 for c in s.strip()), dtype=np.int8)
-
-
-def _parse_prob_string(s: str) -> np.ndarray:
-    s = s.strip().strip('"')
-    if not s:
-        return np.array([], dtype=np.float64)
-    return np.array([float(x) for x in s.split(",") if x], dtype=np.float64)
-
-
-def _parse_binary_csv_string(s: str) -> np.ndarray:
-    s = s.strip().strip('"')
-    if not s:
-        return np.array([], dtype=np.int8)
-    return np.array([int(x) for x in s.split(",") if x], dtype=np.int8)
-
-
-def parse_truth_file(path: str | Path) -> Dict[str, ResidueExample]:
-    records: Dict[str, ResidueExample] = {}
-    for block in _read_blocks(path):
-        if len(block) < 3:
-            raise ValueError(f"Malformed truth block: {block}")
-        protein_id = block[0][1:].strip()
-        sequence = block[1].strip()
-        y_true = _parse_binary_string("".join(block[2:]).strip())
-        if len(sequence) != len(y_true):
-            raise ValueError(
-                f"Length mismatch for {protein_id}: "
-                f"seq={len(sequence)}, labels={len(y_true)}"
-            )
-        records[protein_id] = ResidueExample(protein_id, sequence, y_true)
-    return records
-
-
-def parse_prediction_csv(
-    path: str | Path,
-    records: Dict[str, ResidueExample],
-    model_name: str,
-) -> None:
-    """
-    Parse a prediction CSV (protein_id, length, predictions, binary_predictions).
-    Extra columns are silently ignored.
-    Only proteins present in *records* are loaded; others are silently skipped.
-    """
-    required = {"protein_id", "length", "predictions", "binary_predictions"}
-    with open(path, "r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        if not required.issubset(set(reader.fieldnames or [])):
-            raise ValueError(
-                f"CSV must contain columns {sorted(required)}; got {reader.fieldnames}"
-            )
-        for row in reader:
-            pid = row["protein_id"].strip()
-            if pid not in records:
-                continue
-            expected_len = int(row["length"])
-            scores = _parse_prob_string(row["predictions"])
-            binary = _parse_binary_csv_string(row["binary_predictions"])
-            if len(scores) != expected_len or len(binary) != expected_len:
-                raise ValueError(
-                    f"Length mismatch for {pid} in {path}: "
-                    f"expected {expected_len}, got scores={len(scores)}, binary={len(binary)}"
-                )
-            records[pid].add_prediction(model_name, scores, binary)
-
-    missing = [pid for pid in records if model_name not in records[pid].scores]
-    if missing:
-        raise ValueError(
-            f"Model '{model_name}' is missing predictions for "
-            f"{len(missing)} protein(s): {missing[:5]}{'...' if len(missing) > 5 else ''}"
-        )
-
+from core_lip.evaluation import ResidueExample, parse_prediction_csv, parse_truth_file
+from core_lip.plotting import plot_metrics_bar, plot_pr_curves, plot_roc_curves
 
 # ---------------------------------------------------------------------------
 # Residue-level metrics
@@ -300,227 +171,6 @@ _PALETTE = [
 ]
 
 
-# ── ROC curves ──────────────────────────────────────────────────────────────
-
-
-def plot_roc_curves(
-    records: Dict[str, ResidueExample],
-    model_names: List[str],
-    title: str = "ROC Curves",
-    save_path: Optional[str | Path] = None,
-) -> plt.Figure:
-    fig, ax = plt.subplots(figsize=(6.5, 5.5))
-    handles = []
-
-    for i, name in enumerate(model_names):
-        color = _PALETTE[i % len(_PALETTE)]
-        lw = 2.2 if i == 0 else 1.6
-        try:
-            y_true = np.concatenate(
-                [r.y_true.astype(np.int8) for r in records.values()]
-            )
-            y_score = np.concatenate([r.scores[name] for r in records.values()])
-            fpr, tpr, _ = roc_curve(y_true, y_score)
-            auc = roc_auc_score(y_true, y_score)
-            ax.plot(fpr, tpr, color=color, lw=lw, alpha=0.92)
-            handles.append(
-                Line2D([], [], color=color, lw=lw, label=f"{name}  (AUC = {auc:.3f})")
-            )
-        except ValueError as e:
-            print(f"[plot_roc_curves] Skipping {name}: {e}")
-            handles.append(
-                Line2D([], [], color=color, lw=lw, label=f"{name}  (AUC = n/a)")
-            )
-
-    ax.plot([0, 1], [0, 1], color="#aaa", lw=1.0, ls="--")
-    ax.set_xlim(-0.01, 1.01)
-    ax.set_ylim(-0.01, 1.01)
-    ax.set_xlabel("False Positive Rate", fontsize=11)
-    ax.set_ylabel("True Positive Rate", fontsize=11)
-    ax.set_title(title, fontsize=13, fontweight="bold", pad=10)
-    ax.legend(handles=handles, loc="lower right", fontsize=9, framealpha=0.9)
-    ax.xaxis.set_minor_locator(mticker.MultipleLocator(0.05))
-    ax.yaxis.set_minor_locator(mticker.MultipleLocator(0.05))
-    ax.grid(which="major", color="#e5e5e5", linewidth=0.8)
-    fig.tight_layout()
-
-    if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"Saved → {save_path}")
-    return fig
-
-
-# ── Precision-Recall curves ─────────────────────────────────────────────────
-
-
-def plot_pr_curves(
-    records: Dict[str, ResidueExample],
-    model_names: List[str],
-    title: str = "Precision-Recall Curves",
-    save_path: Optional[str | Path] = None,
-) -> plt.Figure:
-    """
-    Precision-Recall curves are the recommended visualisation for imbalanced
-    datasets.  The no-skill baseline is shown as a horizontal dashed line at
-    the positive class prevalence (LIP residue fraction).
-
-    The Average Precision (AP) summarises the curve as a weighted mean of
-    precisions at each threshold, which is equivalent to the area under the
-    PR curve.  Unlike AUC-ROC, AP is sensitive to class imbalance and does not
-    give credit for true-negative performance — making it the primary metric
-    for LIP/non-LIP prediction.
-    """
-    # Compute global positive rate for the no-skill baseline
-    all_true = np.concatenate([r.y_true.astype(np.int8) for r in records.values()])
-    pos_rate = float(all_true.mean())
-
-    fig, ax = plt.subplots(figsize=(6.5, 5.5))
-    handles = []
-
-    for i, name in enumerate(model_names):
-        color = _PALETTE[i % len(_PALETTE)]
-        lw = 2.2 if i == 0 else 1.6
-        try:
-            y_true = np.concatenate(
-                [r.y_true.astype(np.int8) for r in records.values()]
-            )
-            y_score = np.concatenate([r.scores[name] for r in records.values()])
-            precision, recall, _ = precision_recall_curve(y_true, y_score)
-            ap = average_precision_score(y_true, y_score)
-            # sklearn returns arrays in descending recall order; reverse for a
-            # left-to-right plot
-            ax.plot(recall, precision, color=color, lw=lw, alpha=0.92)
-            handles.append(
-                Line2D([], [], color=color, lw=lw, label=f"{name}  (AP = {ap:.3f})")
-            )
-        except ValueError as e:
-            print(f"[plot_pr_curves] Skipping {name}: {e}")
-            handles.append(
-                Line2D([], [], color=color, lw=lw, label=f"{name}  (AP = n/a)")
-            )
-
-    # No-skill baseline
-    ax.axhline(
-        pos_rate,
-        color="#aaa",
-        lw=1.0,
-        ls="--",
-        label=f"No skill  (prevalence = {pos_rate:.3f})",
-    )
-    handles.append(
-        Line2D(
-            [],
-            [],
-            color="#aaa",
-            lw=1.0,
-            ls="--",
-            label=f"No skill  (prevalence = {pos_rate:.3f})",
-        )
-    )
-
-    ax.set_xlim(-0.01, 1.01)
-    ax.set_ylim(-0.01, 1.01)
-    ax.set_xlabel("Recall", fontsize=11)
-    ax.set_ylabel("Precision", fontsize=11)
-    ax.set_title(title, fontsize=13, fontweight="bold", pad=10)
-    ax.legend(handles=handles, loc="upper right", fontsize=9, framealpha=0.9)
-    ax.xaxis.set_minor_locator(mticker.MultipleLocator(0.05))
-    ax.yaxis.set_minor_locator(mticker.MultipleLocator(0.05))
-    ax.grid(which="major", color="#e5e5e5", linewidth=0.8)
-    fig.tight_layout()
-
-    if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"Saved → {save_path}")
-    return fig
-
-
-# ── Metrics bar chart ────────────────────────────────────────────────────────
-
-
-def plot_metrics_bar(
-    results: List[Dict],
-    title: str = "Model Performance",
-    save_path: Optional[str | Path] = None,
-) -> plt.Figure:
-    """
-    Bar chart comparing MCC, F1, Average Precision, and Brier Score across
-    models.  Average Precision and Brier Score are particularly informative
-    for imbalanced LIP prediction.
-    """
-    model_names = [r["model"] for r in results]
-    colors = [_PALETTE[i % len(_PALETTE)] for i in range(len(results))]
-    x = np.arange(len(model_names))
-
-    panels = [
-        ("mcc", "MCC", False),
-        ("f1", "F1 Score", False),
-        ("avg_precision", "Avg. Precision (PR-AUC)", False),
-        ("brier_score", "Brier Score  (↓ better)", True),
-    ]
-
-    ncols = 2
-    nrows = (len(panels) + ncols - 1) // ncols
-    fig, axes = plt.subplots(
-        nrows,
-        ncols,
-        figsize=(max(8.0, len(model_names) * 1.6) * ncols / 2, 4.2 * nrows),
-    )
-    axes = np.array(axes).flatten()
-    fig.suptitle(title, fontsize=13, fontweight="bold", y=1.01)
-
-    for ax, (key, ylabel, invert) in zip(axes, panels):
-        values = [r[key] for r in results]
-        bars = ax.bar(
-            x,
-            values,
-            width=0.55,
-            color=colors,
-            edgecolor="white",
-            linewidth=0.8,
-            zorder=3,
-        )
-        for bar, val in zip(bars, values):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                val + (0.012 if val >= 0 else -0.012),
-                f"{val:.3f}",
-                ha="center",
-                va="bottom" if val >= 0 else "top",
-                fontsize=8.5,
-                fontweight="bold",
-                color="#333",
-            )
-        ax.set_xticks(x)
-        ax.set_xticklabels(model_names, rotation=30, ha="right", fontsize=9)
-        ax.set_ylabel(ylabel, fontsize=10)
-        y_min = min(0.0, min(values)) - 0.08
-        y_max = max(values) + 0.12
-        ax.set_ylim(y_min, y_max)
-        ax.axhline(0, color="#888", linewidth=0.8, zorder=2)
-        ax.grid(axis="y", which="major", color="#e5e5e5", linewidth=0.8, zorder=0)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        if invert:
-            # Visually invert so "shorter bar = better" for Brier score
-            ax.invert_yaxis()
-
-    # Hide any unused subplot panels
-    for ax in axes[len(panels) :]:
-        ax.set_visible(False)
-
-    fig.tight_layout()
-    if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"Saved → {save_path}")
-    return fig
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluate prediction CSV files at the residue level."
@@ -575,18 +225,18 @@ def main():
     plot_roc_curves(
         test_records,
         model_names,
-        title="ROC Curves – LIP Test Set (residue level)",
+        title="ROC Curves - LIP Test Set (residue level)",
         save_path=output_dir / "roc_curves.pdf",
     )
     plot_pr_curves(
         test_records,
         model_names,
-        title="Precision-Recall Curves – LIP Test Set (residue level)",
+        title="Precision-Recall Curves - LIP Test Set (residue level)",
         save_path=output_dir / "pr_curves.pdf",
     )
     plot_metrics_bar(
         all_results,
-        title="Model Performance – LIP Test Set (residue level)",
+        title="Model Performance - LIP Test Set (residue level)",
         save_path=output_dir / "metrics_bar.pdf",
     )
     plt.show()
