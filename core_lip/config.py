@@ -65,6 +65,9 @@ class TrainingConfig(BaseModel):
     epochs: int
     batch_size: int
     accumulation: int
+    use_focal_loss: bool
+    focal_gamma: float = 2.0
+    focal_alpha: float = 0.75
     lr: float
     weight_decay: float
     seed: int
