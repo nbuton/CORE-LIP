@@ -14,11 +14,22 @@ global scalar, and pairwise conformational signals.
 
 ```
 CORE-LIP/
-├── core_lip/                  # Installable Python package
-│   ├── __init__.py
-│   ├── model.py               # ProteinMultiScaleTransformer + ProteinModelConfig
-│   ├── datasets.py            # Dataset classes and collate functions
-│   └── utils.py               # I/O helpers and feature extraction
+├── core_lip/                  # Core Library
+│   ├── config.py              # Pydantic configuration schemas
+│   ├── data/                  # Data handling & Pre-processing
+│   │   ├── datasets.py        # PyTorch Dataset & Collation
+│   │   ├── io.py              # I/O, Parsing (Truth/CSV), & Feature extraction
+│   │   └── features.py        # Canonical feature name definitions
+│   ├── modeling/              # Neural Network Architecture
+│   │   ├── transformer.py     # ProteinMultiScaleTransformer
+│   │   └── loss.py            # FocalLoss implementation
+│   ├── engine/                # Execution Logic
+│   │   ├── trainer.py         # Training loops & gradient utilities
+│   │   └── predictor.py       # Inference wrappers & checkpoint loading
+│   └── eval/                  # Statistics & Visualization
+│       ├── metrics.py         # AUC, MCC, and thresholding logic
+│       ├── plotting.py        # Publication-ready figure generation
+│       └── structures.py      # ResidueExample tracking objects
 │
 ├── scripts/                   # End-to-end pipeline (run in order)
 │   ├── compute_properties.py  # 1 – Extract MD features → HDF5
