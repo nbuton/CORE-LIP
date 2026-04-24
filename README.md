@@ -32,7 +32,7 @@ CORE-LIP/
 │       └── structures.py      # ResidueExample tracking objects
 │
 ├── scripts/                   # End-to-end pipeline (run in order)
-│   ├── compute_properties.py  # 1 – Extract MD features → HDF5
+│   ├── compute_properties.py  # 1 – Extract conformational structure set features → HDF5
 │   ├── visualize_features.py  # 2 – Compare LIP / non-LIP feature distributions
 │   ├── train.py               # 3 – Train the model
 │   ├── predict.py             # 4 – Generate per-residue predictions
@@ -41,7 +41,7 @@ CORE-LIP/
 ├── data/
 │   ├── CLIP_dataset/          # TR1000.txt, TE440.txt (and *_max_1024.txt after filtering)
 │   ├── conformational_ensemble/  # Per-protein folders with DCD/PDB trajectories
-│   ├── protein_MD_properties.h5  # Output of compute_properties.py
+│   ├── properties/  # Output of compute_properties.py
 │   ├── models/                # Saved model checkpoints
 │   └── predictions/           # CSV files from predict.py
 │
@@ -189,7 +189,7 @@ a linear classification head outputs class logits.
 
 ## Features
 
-### Scalar (per-protein, from MD ensemble)
+### Scalar (per-protein, from conformational ensemble)
 Asphericity, radius of gyration, end-to-end distance, shape anisotropy metrics,
 gyration eigenvalues, scaling exponent, etc.
 
