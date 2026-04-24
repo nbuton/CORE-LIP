@@ -41,7 +41,8 @@ from core_lip import (
     read_protein_data,
 )
 from core_lip.config import FullConfig
-from core_lip.utils import get_all_feature_stats
+from core_lip.loss import FocalLoss
+from core_lip.utils import cluster_sequences_mmseqs2, get_all_feature_stats
 
 # ---------------------------------------------------------------------------
 # Feature configuration (edit here to change the feature set)
@@ -355,18 +356,38 @@ def main():
         X_scalar, X_local, X_pairwise, seqs, y_list, ids = prepare_data(
             df, h5, SCALAR_FEATURES, LOCAL_FEATURES, PAIRWISE_FEATURES
         )
-        print(analyze_scalar_list(X_scalar, SCALAR_FEATURES))
-
+    print(analyze_scalar_list(X_scalar, SCALAR_FEATURES))
     dataset = ProteinDataset(X_scalar, X_local, X_pairwise, seqs, y_list)
 
-    n = len(dataset)
-    indices = np.random.permutation(n)
-    split = max(1, int(0.9 * n))
-
-    train_subset = torch.utils.data.Subset(dataset, indices[:split].tolist())
-    val_subset = torch.utils.data.Subset(
-        dataset, indices[split:].tolist() or indices[:1].tolist()
+    # ── OOD Validation split via MMseqs2 clustering ────────────────────────────
+    seq_df = pd.DataFrame({"id": ids, "sequence": seqs})
+    cluster_df = cluster_sequences_mmseqs2(
+        seq_df, output_file="data/TR1000_cluster.csv"
     )
+
+    all_clusters = cluster_df["cluster"].unique()
+    rng = np.random.default_rng(train_cfg.seed)
+    rng.shuffle(all_clusters)
+
+    n_val_clusters = max(1, int(0.2 * len(all_clusters)))
+    val_clusters = set(all_clusters[:n_val_clusters])
+    train_clusters = set(all_clusters[n_val_clusters:])
+
+    val_ids = set(cluster_df[cluster_df["cluster"].isin(val_clusters)]["id"])
+    train_ids = set(cluster_df[cluster_df["cluster"].isin(train_clusters)]["id"])
+
+    print(
+        f"[split] {n_val_clusters}/{len(all_clusters)} clusters used for val "
+        f"→ {len(val_ids)} proteins ({len(val_ids)/len(ids)*100:.1f}%)"
+    )
+    print(f"[split] Train proteins: {len(train_ids)}")
+
+    id_to_idx = {pid: i for i, pid in enumerate(ids)}
+    train_indices = [id_to_idx[pid] for pid in train_ids if pid in id_to_idx]
+    val_indices = [id_to_idx[pid] for pid in val_ids if pid in id_to_idx]
+
+    train_subset = torch.utils.data.Subset(dataset, train_indices)
+    val_subset = torch.utils.data.Subset(dataset, val_indices)
 
     # ── Loaders (Changed to dot notation) ──────────────────────────────────────
     train_loader = DataLoader(
@@ -410,8 +431,13 @@ def main():
     print(f"pos_weight: {pos_weight_value:.1f}  (pos={total_pos}, neg={total_neg})")
 
     pos_weight = torch.tensor([pos_weight_value], device=device, dtype=torch.float32)
-    criterion = nn.BCEWithLogitsLoss(reduction="none", pos_weight=pos_weight)
-
+    criterion = (
+        FocalLoss(
+            gamma=train_cfg.focal_gamma, alpha=train_cfg.focal_alpha, reduction="none"
+        )
+        if train_cfg.use_focal_loss
+        else nn.BCEWithLogitsLoss(reduction="none", pos_weight=pos_weight)
+    )
     # Changed to dot notation
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=train_cfg.lr, weight_decay=train_cfg.weight_decay

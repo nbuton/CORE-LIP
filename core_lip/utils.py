@@ -200,3 +200,112 @@ def get_all_feature_stats(X_scalar_list, X_local_list, X_pairwise_list):
         stats["pairwise"] = {"means": torch.tensor([]), "stds": torch.tensor([])}
 
     return stats
+
+
+import os
+import subprocess
+import tempfile
+import pandas as pd
+
+
+def cluster_sequences_mmseqs2(
+    df: pd.DataFrame,
+    sequence_col: str = "sequence",
+    id_col: str = "id",
+    output_file: str = "data/TR1000_cluster.csv",
+    seq_identity: float = 0.25,
+) -> pd.DataFrame:
+    """
+    Cluster sequences using MMseqs2 at a given sequence identity threshold.
+
+    Args:
+        df: DataFrame with at least a sequence and an id column.
+        sequence_col: Name of the column containing sequences.
+        id_col: Name of the column containing sequence identifiers.
+        output_file: Path to the output CSV file.
+        seq_identity: Sequence identity threshold for clustering (default 0.25).
+
+    Returns:
+        DataFrame with columns [id_col, sequence_col, 'cluster'].
+    """
+    if os.path.exists(output_file):
+        print(f"[clustering] {output_file} already exists, loading it.")
+        return pd.read_csv(output_file)
+
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fasta_path = os.path.join(tmpdir, "input.fasta")
+        db_path = os.path.join(tmpdir, "seqdb")
+        cluster_db = os.path.join(tmpdir, "clusterdb")
+        tmp_path = os.path.join(tmpdir, "tmp")
+        tsv_path = os.path.join(tmpdir, "clusters.tsv")
+
+        # Write FASTA
+        with open(fasta_path, "w") as f:
+            for _, row in df.iterrows():
+                f.write(f">{row[id_col]}\n{row[sequence_col]}\n")
+
+        # Create MMseqs2 DB
+        subprocess.run(
+            ["mmseqs", "createdb", fasta_path, db_path],
+            check=True,
+            capture_output=True,
+        )
+
+        # Cluster at given seq identity
+        # --min-seq-id   : sequence identity threshold
+        # -c 0.8         : coverage threshold
+        # --cov-mode 0   : coverage of both query and target
+        # --cluster-mode 1: connected component clustering (better for low identity)
+        subprocess.run(
+            [
+                "mmseqs",
+                "cluster",
+                db_path,
+                cluster_db,
+                tmp_path,
+                "--min-seq-id",
+                str(seq_identity),
+                "-c",
+                "0.8",
+                "--cov-mode",
+                "0",
+                "--cluster-mode",
+                "1",
+                "--threads",
+                "4",
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+        # Convert cluster DB to TSV (representative \t member)
+        subprocess.run(
+            ["mmseqs", "createtsv", db_path, db_path, cluster_db, tsv_path],
+            check=True,
+            capture_output=True,
+        )
+
+        cluster_df = pd.read_csv(
+            tsv_path,
+            sep="\t",
+            header=None,
+            names=["cluster_representative", id_col],
+        )
+
+    # Map representative id → integer cluster index
+    reps = cluster_df["cluster_representative"].unique()
+    rep_to_idx = {rep: idx for idx, rep in enumerate(reps)}
+    cluster_df["cluster"] = cluster_df["cluster_representative"].map(rep_to_idx)
+
+    # Merge with original df to get sequences
+    result = df[[id_col, sequence_col]].merge(
+        cluster_df[[id_col, "cluster"]], on=id_col, how="left"
+    )
+
+    result.to_csv(output_file, index=False)
+    print(f"[clustering] Done. {result['cluster'].nunique()} clusters found.")
+    print(f"[clustering] Saved to {output_file}")
+
+    return result
