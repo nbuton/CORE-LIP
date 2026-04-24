@@ -9,9 +9,8 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = get_config(args.config)
-    cfg.config_path = args.config  # Store path for the trainer
 
-    trainer = CORE_LIP_Trainer(cfg, device=args.device)
+    trainer = CORE_LIP_Trainer(cfg, args.config, device=args.device)
     trainer.run()
     trainer.plot()
 

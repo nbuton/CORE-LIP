@@ -34,7 +34,6 @@ from core_lip.data.io import (
     read_protein_data,
 )
 from core_lip.eval.metrics import evaluate, select_threshold_cv
-from core_lip.engine.trainer import get_config, set_seed, train_one_epoch
 from core_lip.modeling.loss import AUCMarginLoss, FocalLoss, LDAMLoss
 from core_lip.modeling.protein_multi_scale_transformer import (
     ProteinMultiScaleTransformer,
@@ -71,14 +70,14 @@ def get_config(yaml_path: str) -> FullConfig:
 
 
 class CORE_LIP_Trainer:
-    def __init__(self, cfg, device="cpu"):
+    def __init__(self, cfg, config_path, device="cpu"):
         self.cfg = cfg
         self.train_cfg = cfg.training
         self.model_cfg = cfg.model
         self.device = torch.device(device)
 
         # Paths
-        self.config_dir = os.path.dirname(os.path.abspath(cfg.config_path))
+        self.config_dir = os.path.dirname(os.path.abspath(config_path))
         self.model_save_path = os.path.join(self.config_dir, "core_lip.pt")
 
         set_seed(self.train_cfg.seed)
@@ -182,7 +181,9 @@ class CORE_LIP_Trainer:
                 n_pos=total_pos, n_neg=total_neg, reduction="none", **params
             )
         elif loss_type == "bce_with_logits":
-            pos_weight = torch.tensor([total_neg / total_pos], device=self.device)
+            pos_weight = torch.tensor(
+                [total_neg / total_pos], device=self.device, dtype=torch.float32
+            )
             self.criterion = nn.BCEWithLogitsLoss(
                 pos_weight=pos_weight, reduction="none"
             )
