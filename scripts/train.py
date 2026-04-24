@@ -25,20 +25,24 @@ import torch.nn as nn
 from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 
-from core_lip import (
-    ProteinDataset,
-    ProteinMultiScaleTransformer,
-    collate_proteins,
+
+from core_lip.data.datasets import ProteinDataset, collate_proteins
+from core_lip.data.features import LOCAL_FEATURES, PAIRWISE_FEATURES, SCALAR_FEATURES
+from core_lip.data.io import (
+    cluster_sequences_mmseqs2,
+    get_all_feature_stats,
     prepare_data,
     read_protein_data,
 )
-from core_lip.data.features import LOCAL_FEATURES, PAIRWISE_FEATURES, SCALAR_FEATURES
-from core_lip.engine.loss import FocalLoss
 from core_lip.eval.metrics import analyze_scalar_list, evaluate, select_threshold_cv
 from core_lip.engine.trainer import get_config, set_seed, train_one_epoch
-from core_lip.utils import cluster_sequences_mmseqs2, get_all_feature_stats
 
 import argparse
+
+from core_lip.modeling.loss import FocalLoss
+from core_lip.modeling.protein_multi_scale_transformer import (
+    ProteinMultiScaleTransformer,
+)
 
 
 def main() -> None:
@@ -47,7 +51,6 @@ def main() -> None:
         "--config",
         required=True,
         help="Path to config.yaml",
-        default="data/models/CORE_LIP_STARLING/config.yaml",
     )
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
@@ -69,11 +72,12 @@ def main() -> None:
     # ── Data ───────────────────────────────────────────────────────────────────
     with h5py.File(train_cfg.h5_properties, "r") as h5:
         df = read_protein_data(train_cfg.training_dataset)
+        print(df)
         X_scalar, X_local, X_pairwise, seqs, y_list, ids = prepare_data(
             df, h5, SCALAR_FEATURES, LOCAL_FEATURES, PAIRWISE_FEATURES
         )
 
-    print(analyze_scalar_list(X_scalar, SCALAR_FEATURES))
+    # print(analyze_scalar_list(X_scalar, SCALAR_FEATURES))
     dataset = ProteinDataset(X_scalar, X_local, X_pairwise, seqs, y_list)
 
     # ── OOD validation split via MMseqs2 clustering ────────────────────────────
@@ -86,7 +90,7 @@ def main() -> None:
     rng = np.random.default_rng(train_cfg.seed)
     rng.shuffle(all_clusters)
 
-    n_val_clusters = max(1, int(0.2 * len(all_clusters)))
+    n_val_clusters = max(1, int(0.1 * len(all_clusters)))
     val_clusters = set(all_clusters[:n_val_clusters])
     train_clusters = set(all_clusters[n_val_clusters:])
 

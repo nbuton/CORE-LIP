@@ -273,9 +273,20 @@ def cluster_sequences_mmseqs2(
     seq_identity: float = 0.25,
 ) -> pd.DataFrame:
     """Cluster sequences using MMseqs2 at a given sequence identity threshold."""
+    # --- Cache Verification Logic ---
     if os.path.exists(output_file):
-        print(f"[clustering] {output_file} already exists, loading it.")
-        return pd.read_csv(output_file)
+        cached_df = pd.read_csv(output_file)
+
+        # Check if all IDs in the current input df exist in the cached file
+        missing_ids = set(df[id_col]) - set(cached_df[id_col])
+
+        if not missing_ids:
+            print(f"[clustering] {output_file} exists and contains all IDs. Loading.")
+            return cached_df
+        else:
+            print(
+                f"[clustering] {len(missing_ids)} IDs missing from cache. Re-clustering..."
+            )
 
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
 

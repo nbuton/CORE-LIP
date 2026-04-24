@@ -95,11 +95,9 @@ data/conformational_ensemble/IDPFold2/
 Once your ensembles are ready, run the unified production script. This script handles property computation and LIP prediction in one go:
 
 ```bash
-python scripts/production_predict.py \
-    --model      data/models/production_core_lip.pt \
-    --h5         data/protein_IDPFold2_properties.h5 \
-    --datasets   data/CLIP_dataset/my_sequences.fasta \
-    --output_dir data/predictions/
+python scripts/train.py \
+    --config  data/models/CORE_LIP_IDPFold2/config.yaml \
+    --device cuda
 ```
 
 ---
