@@ -28,7 +28,17 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 from matplotlib.lines import Line2D
-from sklearn.metrics import f1_score, matthews_corrcoef, roc_auc_score, roc_curve
+from sklearn.metrics import (
+    average_precision_score,
+    brier_score_loss,
+    f1_score,
+    matthews_corrcoef,
+    precision_recall_curve,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+    roc_curve,
+)
 
 csv.field_size_limit(sys.maxsize)
 
@@ -165,23 +175,36 @@ def compute_residue_metrics(
     records: Dict[str, ResidueExample],
     model_name: str,
 ) -> Dict:
-    """Concatenate all per-residue labels/scores and compute residue-level metrics."""
-    y_true = np.concatenate(
-        [r.y_true.astype(np.int8) for r in records.values() if model_name in r.scores]
-    )
+    """
+    Compute residue-level metrics, including several that are robust to class
+    imbalance — important for LIP/non-LIP prediction where positive residues
+    are typically a small minority.
+
+    Metrics returned
+    ----------------
+    n_residues      : total residues evaluated
+    pos_rate        : fraction of positive (LIP) residues  ← shows imbalance
+    mcc             : Matthews Correlation Coefficient      ← balanced, threshold-dependent
+    f1              : F1 score at chosen threshold          ← threshold-dependent
+    precision       : Precision at chosen threshold
+    recall          : Recall at chosen threshold
+    auc_roc         : Area under ROC curve                 ← threshold-independent
+    avg_precision   : Average Precision (PR-AUC)           ← best single metric for imbalance
+    brier_score     : Brier score (calibration quality)    ← lower is better
+    """
+    missing = [pid for pid, r in records.items() if model_name not in r.scores]
+    if missing:
+        raise ValueError(
+            f"Model '{model_name}' is missing predictions for "
+            f"{len(missing)} protein(s): {missing[:5]}{'...' if len(missing) > 5 else ''}"
+        )
+
+    y_true = np.concatenate([r.y_true.astype(np.int8) for r in records.values()])
     y_score = np.concatenate(
-        [
-            r.scores[model_name].astype(np.float64)
-            for r in records.values()
-            if model_name in r.scores
-        ]
+        [r.scores[model_name].astype(np.float64) for r in records.values()]
     )
     y_pred = np.concatenate(
-        [
-            r.binary[model_name].astype(np.int8)
-            for r in records.values()
-            if model_name in r.scores
-        ]
+        [r.binary[model_name].astype(np.int8) for r in records.values()]
     )
 
     if len(y_true) == 0:
@@ -190,13 +213,24 @@ def compute_residue_metrics(
     out: Dict = {
         "model": model_name,
         "n_residues": int(len(y_true)),
+        "pos_rate": float(y_true.mean()),
         "mcc": float(matthews_corrcoef(y_true, y_pred)),
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "brier_score": float(brier_score_loss(y_true, y_score)),
     }
+
     try:
         out["auc_roc"] = float(roc_auc_score(y_true, y_score))
     except ValueError:
         out["auc_roc"] = float("nan")
+
+    try:
+        out["avg_precision"] = float(average_precision_score(y_true, y_score))
+    except ValueError:
+        out["avg_precision"] = float("nan")
+
     return out
 
 
@@ -204,19 +238,40 @@ def compute_residue_metrics(
 # Reporting
 # ---------------------------------------------------------------------------
 
+# Ordered columns for the printed table
+_TABLE_COLS = [
+    ("model", "Model"),
+    ("n_residues", "N res."),
+    ("pos_rate", "LIP%"),
+    ("mcc", "MCC"),
+    ("f1", "F1"),
+    ("precision", "Prec."),
+    ("recall", "Rec."),
+    ("auc_roc", "AUC-ROC"),
+    ("avg_precision", "AP (PR-AUC)"),
+    ("brier_score", "Brier↓"),
+]
+
+
+def _fmt(key: str, val) -> str:
+    if key == "model":
+        return str(val)
+    if key == "n_residues":
+        return str(int(val))
+    if key == "pos_rate":
+        return f"{val * 100:.1f}%"
+    if key == "brier_score":
+        return f"{val:.4f}"
+    if np.isfinite(val):
+        return f"{val:.4f}"
+    return "nan"
+
 
 def print_results_table(results: List[Dict]) -> None:
-    headers = ["model", "n_residues", "mcc", "f1", "auc_roc"]
-    rows = [
-        [
-            str(r["model"]),
-            str(int(r["n_residues"])),
-            f'{r["mcc"]:.4f}',
-            f'{r["f1"]:.4f}',
-            f'{r["auc_roc"]:.4f}' if np.isfinite(r["auc_roc"]) else "nan",
-        ]
-        for r in results
-    ]
+    headers = [label for _, label in _TABLE_COLS]
+    keys = [k for k, _ in _TABLE_COLS]
+
+    rows = [[_fmt(k, r[k]) for k in keys] for r in results]
 
     widths = [
         max(len(headers[i]), max(len(row[i]) for row in rows))
@@ -245,6 +300,9 @@ _PALETTE = [
 ]
 
 
+# ── ROC curves ──────────────────────────────────────────────────────────────
+
+
 def plot_roc_curves(
     records: Dict[str, ResidueExample],
     model_names: List[str],
@@ -259,11 +317,9 @@ def plot_roc_curves(
         lw = 2.2 if i == 0 else 1.6
         try:
             y_true = np.concatenate(
-                [r.y_true.astype(np.int8) for r in records.values() if name in r.scores]
+                [r.y_true.astype(np.int8) for r in records.values()]
             )
-            y_score = np.concatenate(
-                [r.scores[name] for r in records.values() if name in r.scores]
-            )
+            y_score = np.concatenate([r.scores[name] for r in records.values()])
             fpr, tpr, _ = roc_curve(y_true, y_score)
             auc = roc_auc_score(y_true, y_score)
             ax.plot(fpr, tpr, color=color, lw=lw, alpha=0.92)
@@ -294,24 +350,127 @@ def plot_roc_curves(
     return fig
 
 
+# ── Precision-Recall curves ─────────────────────────────────────────────────
+
+
+def plot_pr_curves(
+    records: Dict[str, ResidueExample],
+    model_names: List[str],
+    title: str = "Precision-Recall Curves",
+    save_path: Optional[str | Path] = None,
+) -> plt.Figure:
+    """
+    Precision-Recall curves are the recommended visualisation for imbalanced
+    datasets.  The no-skill baseline is shown as a horizontal dashed line at
+    the positive class prevalence (LIP residue fraction).
+
+    The Average Precision (AP) summarises the curve as a weighted mean of
+    precisions at each threshold, which is equivalent to the area under the
+    PR curve.  Unlike AUC-ROC, AP is sensitive to class imbalance and does not
+    give credit for true-negative performance — making it the primary metric
+    for LIP/non-LIP prediction.
+    """
+    # Compute global positive rate for the no-skill baseline
+    all_true = np.concatenate([r.y_true.astype(np.int8) for r in records.values()])
+    pos_rate = float(all_true.mean())
+
+    fig, ax = plt.subplots(figsize=(6.5, 5.5))
+    handles = []
+
+    for i, name in enumerate(model_names):
+        color = _PALETTE[i % len(_PALETTE)]
+        lw = 2.2 if i == 0 else 1.6
+        try:
+            y_true = np.concatenate(
+                [r.y_true.astype(np.int8) for r in records.values()]
+            )
+            y_score = np.concatenate([r.scores[name] for r in records.values()])
+            precision, recall, _ = precision_recall_curve(y_true, y_score)
+            ap = average_precision_score(y_true, y_score)
+            # sklearn returns arrays in descending recall order; reverse for a
+            # left-to-right plot
+            ax.plot(recall, precision, color=color, lw=lw, alpha=0.92)
+            handles.append(
+                Line2D([], [], color=color, lw=lw, label=f"{name}  (AP = {ap:.3f})")
+            )
+        except ValueError as e:
+            print(f"[plot_pr_curves] Skipping {name}: {e}")
+            handles.append(
+                Line2D([], [], color=color, lw=lw, label=f"{name}  (AP = n/a)")
+            )
+
+    # No-skill baseline
+    ax.axhline(
+        pos_rate,
+        color="#aaa",
+        lw=1.0,
+        ls="--",
+        label=f"No skill  (prevalence = {pos_rate:.3f})",
+    )
+    handles.append(
+        Line2D(
+            [],
+            [],
+            color="#aaa",
+            lw=1.0,
+            ls="--",
+            label=f"No skill  (prevalence = {pos_rate:.3f})",
+        )
+    )
+
+    ax.set_xlim(-0.01, 1.01)
+    ax.set_ylim(-0.01, 1.01)
+    ax.set_xlabel("Recall", fontsize=11)
+    ax.set_ylabel("Precision", fontsize=11)
+    ax.set_title(title, fontsize=13, fontweight="bold", pad=10)
+    ax.legend(handles=handles, loc="upper right", fontsize=9, framealpha=0.9)
+    ax.xaxis.set_minor_locator(mticker.MultipleLocator(0.05))
+    ax.yaxis.set_minor_locator(mticker.MultipleLocator(0.05))
+    ax.grid(which="major", color="#e5e5e5", linewidth=0.8)
+    fig.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"Saved → {save_path}")
+    return fig
+
+
+# ── Metrics bar chart ────────────────────────────────────────────────────────
+
+
 def plot_metrics_bar(
     results: List[Dict],
     title: str = "Model Performance",
     save_path: Optional[str | Path] = None,
 ) -> plt.Figure:
+    """
+    Bar chart comparing MCC, F1, Average Precision, and Brier Score across
+    models.  Average Precision and Brier Score are particularly informative
+    for imbalanced LIP prediction.
+    """
     model_names = [r["model"] for r in results]
-    mcc_vals = [r["mcc"] for r in results]
-    f1_vals = [r["f1"] for r in results]
     colors = [_PALETTE[i % len(_PALETTE)] for i in range(len(results))]
     x = np.arange(len(model_names))
 
-    fig, axes = plt.subplots(1, 2, figsize=(max(7.0, len(model_names) * 1.4), 4.8))
-    fig.suptitle(title, fontsize=13, fontweight="bold")
+    panels = [
+        ("mcc", "MCC", False),
+        ("f1", "F1 Score", False),
+        ("avg_precision", "Avg. Precision (PR-AUC)", False),
+        ("brier_score", "Brier Score  (↓ better)", True),
+    ]
 
-    for ax, values, ylabel in [
-        (axes[0], mcc_vals, "Matthews Correlation Coefficient"),
-        (axes[1], f1_vals, "F1 Score"),
-    ]:
+    ncols = 2
+    nrows = (len(panels) + ncols - 1) // ncols
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(max(8.0, len(model_names) * 1.6) * ncols / 2, 4.2 * nrows),
+    )
+    axes = np.array(axes).flatten()
+    fig.suptitle(title, fontsize=13, fontweight="bold", y=1.01)
+
+    for ax, (key, ylabel, invert) in zip(axes, panels):
+        values = [r[key] for r in results]
         bars = ax.bar(
             x,
             values,
@@ -335,11 +494,20 @@ def plot_metrics_bar(
         ax.set_xticks(x)
         ax.set_xticklabels(model_names, rotation=30, ha="right", fontsize=9)
         ax.set_ylabel(ylabel, fontsize=10)
-        ax.set_ylim(min(0.0, min(values)) - 0.08, max(values) + 0.12)
+        y_min = min(0.0, min(values)) - 0.08
+        y_max = max(values) + 0.12
+        ax.set_ylim(y_min, y_max)
         ax.axhline(0, color="#888", linewidth=0.8, zorder=2)
         ax.grid(axis="y", which="major", color="#e5e5e5", linewidth=0.8, zorder=0)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
+        if invert:
+            # Visually invert so "shorter bar = better" for Brier score
+            ax.invert_yaxis()
+
+    # Hide any unused subplot panels
+    for ax in axes[len(panels) :]:
+        ax.set_visible(False)
 
     fig.tight_layout()
     if save_path:
@@ -401,13 +569,20 @@ def main():
     print("\n=== Residue-level evaluation ===")
     print_results_table(all_results)
 
-    # Figures
+    # ── Figures ────────────────────────────────────────────────────────────
     model_names = [r["model"] for r in all_results]
+
     plot_roc_curves(
         test_records,
         model_names,
         title="ROC Curves – LIP Test Set (residue level)",
         save_path=output_dir / "roc_curves.pdf",
+    )
+    plot_pr_curves(
+        test_records,
+        model_names,
+        title="Precision-Recall Curves – LIP Test Set (residue level)",
+        save_path=output_dir / "pr_curves.pdf",
     )
     plot_metrics_bar(
         all_results,

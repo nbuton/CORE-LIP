@@ -444,9 +444,9 @@ class TransformerBlock(nn.Module):
         3. FeedForwardNetwork — position-wise FFN (E → 2E → E)
     """
 
-    def __init__(self, cfg: ProteinModelConfig, activate_pairwise_bias: bool = True):
+    def __init__(self, cfg: ProteinModelConfig):
         super().__init__()
-        self.activate_pairwise_bias = activate_pairwise_bias
+        self.activate_pairwise_bias = cfg.activate_pairwise_bias
         self.pairwise_cnn = PairwiseCNN(
             nb_pairwise=cfg.nb_pairwise,
             cnn_channels=cfg.pairwise_cnn_channels,
@@ -459,7 +459,7 @@ class TransformerBlock(nn.Module):
             embed_dim=cfg.embed_dim,
             num_heads=cfg.num_heads,
             dropout=cfg.dropout,
-            activate_bias=activate_pairwise_bias,
+            activate_bias=cfg.activate_pairwise_bias,
         )
         self.ffn = FeedForwardNetwork(
             embed_dim=cfg.embed_dim,
@@ -572,16 +572,13 @@ class ProteinMultiScaleTransformer(nn.Module):
             stats["pairwise"]["means"],
             stats["pairwise"]["stds"],
             cfg.dropout,
+            cfg.window_size_pairwise_input,
         )
         self.embed_norm = nn.LayerNorm(E)
 
         # ── Transformer blocks ────────────────────────────────────────────
-        activate_pairwise_bias = "pairwise_features" in self.inputs_features
         self.blocks = nn.ModuleList(
-            [
-                TransformerBlock(cfg, activate_pairwise_bias)
-                for _ in range(cfg.num_blocks)
-            ]
+            [TransformerBlock(cfg) for _ in range(cfg.num_blocks)]
         )
 
         # ── Pooling + head ────────────────────────────────────────────────
