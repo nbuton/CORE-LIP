@@ -14,29 +14,30 @@ global scalar, and pairwise conformational signals.
 
 ```
 CORE-LIP/
-├── core_lip/                  # Core Library
-│   ├── config.py              # Pydantic configuration schemas
-│   ├── data/                  # Data handling & Pre-processing
-│   │   ├── datasets.py        # PyTorch Dataset & Collation
-│   │   ├── io.py              # I/O, Parsing (Truth/CSV), & Feature extraction
-│   │   └── features.py        # Canonical feature name definitions
-│   ├── modeling/              # Neural Network Architecture
-│   │   ├── transformer.py     # ProteinMultiScaleTransformer
-│   │   └── loss.py            # FocalLoss implementation
-│   ├── engine/                # Execution Logic
-│   │   ├── trainer.py         # Training loops & gradient utilities
-│   │   └── predictor.py       # Inference wrappers & checkpoint loading
-│   └── eval/                  # Statistics & Visualization
-│       ├── metrics.py         # AUC, MCC, and thresholding logic
-│       ├── plotting.py        # Publication-ready figure generation
-│       └── structures.py      # ResidueExample tracking objects
+├── core_lip/                         # Core Library
+│   ├── config.py                     # Pydantic configuration schemas
+│   ├── data/                         # Data handling & Pre-processing
+│   │   ├── datasets.py               # PyTorch Dataset & Collation
+│   │   ├── io.py                     # I/O, Parsing (Truth/CSV)
+│   │   ├── properties_extraction.py  # Feature extraction
+│   │   └── features.py               # Canonical feature name definitions
+│   ├── modeling/                     # Neural Network Architecture
+│   │   ├── transformer.py            # ProteinMultiScaleTransformer
+│   │   └── loss.py                   # FocalLoss implementation
+│   ├── engine/                       # Execution Logic
+│   │   ├── trainer.py                # Training loops & gradient utilities
+│   │   └── predictor.py              # Inference wrappers & checkpoint loading
+│   └── eval/                         # Statistics & Visualization
+│       ├── metrics.py                # AUC, MCC, and thresholding logic
+│       ├── plotting.py               # Publication-ready figure generation
+│       └── structures.py             # ResidueExample tracking objects
 │
-├── scripts/                   # End-to-end pipeline (run in order)
-│   ├── compute_properties.py  # 1 – Extract conformational structure set features → HDF5
-│   ├── visualize_features.py  # 2 – Compare LIP / non-LIP feature distributions
-│   ├── train.py               # 3 – Train the model
-│   ├── predict.py             # 4 – Generate per-residue predictions
-│   └── evaluate.py            # 5 – Benchmark against baselines
+├── scripts/                          # End-to-end pipeline (run in order)
+│   ├── compute_properties.py         # 1 – Extract conformational structure set features → HDF5
+│   ├── visualize_features.py         # 2 – Compare LIP / non-LIP feature distributions
+│   ├── train.py                      # 3 – Train the model
+│   ├── predict.py                    # 4 – Generate per-residue predictions
+│   └── evaluate.py                   # 5 – Benchmark against previous other models
 │
 ├── data/
 │   ├── CLIP_dataset/          # TR1000.txt, TE440.txt (and *_max_1024.txt after filtering)
