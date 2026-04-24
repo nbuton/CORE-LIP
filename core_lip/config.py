@@ -1,6 +1,7 @@
 from pydantic import BaseModel, model_validator
 from pathlib import Path
 from typing import List, Tuple
+from typing import Dict, Any
 
 
 class ProteinModelConfig(BaseModel):
@@ -67,9 +68,8 @@ class TrainingConfig(BaseModel):
     epochs: int
     batch_size: int
     accumulation: int
-    use_focal_loss: bool
-    focal_gamma: float = 2.0
-    focal_alpha: float = 0.75
+    loss_type: str
+    loss_params: Dict[str, Any] = {}
     lr: float
     weight_decay: float
     seed: int

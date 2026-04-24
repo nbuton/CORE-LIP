@@ -18,8 +18,10 @@ import torch
 from torch.utils.data import DataLoader
 
 from core_lip.data.datasets import ProteinDataset, collate_proteins
-from core_lip.engine.protein_multi_scale_transformer import ProteinMultiScaleTransformer
-from core_lip import prepare_data, read_protein_data
+from core_lip.data.io import prepare_data, read_protein_data
+from core_lip.modeling.protein_multi_scale_transformer import (
+    ProteinMultiScaleTransformer,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +107,14 @@ def predict_dataset(
         collate_fn=collate_proteins,
     )
 
-    best_thr: float = checkpoint["best_threshold"]
+    if "best_threshold" not in checkpoint.keys():
+        best_thr: float = float(
+            input(
+                "The best_threshold was not found in the checkpoint. Please enter a value (e.g., 0.5): "
+            )
+        )
+    else:
+        best_thr: float = checkpoint["best_threshold"]
     rows: list[dict] = []
 
     for x_scalar_pad, x_local_pad, x_pairwise_pad, seq_pad, mask, protein_ids in loader:

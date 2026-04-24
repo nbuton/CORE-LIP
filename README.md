@@ -124,8 +124,8 @@ python scripts/compute_properties.py \
 
 ```bash
 python scripts/visualize_features.py \
-    --dataset  data/CLIP_dataset/TR1000_less_than_380.txt \
-    --h5       data/properties/STARLING_derived_properties.h5 \
+    --dataset  data/CLIP_dataset/TR1000_less_than_1024.txt \
+    --h5       data/properties/IDPFold2_derived_properties.h5 \
     --output   results/feature_comparison_violin.pdf
 ```
 This create a violin plot with all the features with the name results/{dataset_stem}_{h5_stem}_feature_comparison_violin.pdf
@@ -134,19 +134,17 @@ This create a violin plot with all the features with the name results/{dataset_s
 
 ```bash
 python scripts/train.py \
-    --config  data/models/CORE_LIP_STARLING/config.yaml \
-    --dataset data/CLIP_dataset/TR1000_less_than_380.txt \
-    --h5      data/properties/STARLING_derived_properties.h5 \
-    --device   cpu
+    --config  data/models/CORE_LIP_IDPFold2/config.yaml \
+    --device mps
 ```
 
 ### 4 — Make predictions
 
 ```bash
-python scripts/predict.py \
-    --model     data/models/CORE_LIP_STARLING/core_lip.pt \
-    --h5        data/properties/STARLING_derived_properties.h5 \
-    --datasets  data/CLIP_dataset/TE440_less_than_380.txt \
+─ python scripts/predict.py \
+    --model     data/models/CORE_LIP_IDPFold2/core_lip.pt \
+    --h5        data/properties/IDPFold2_derived_properties.h5 \
+    --datasets  data/CLIP_dataset/TE440_less_than_1024.txt \
     --output_dir data/predictions/
 ```
 
@@ -154,11 +152,11 @@ python scripts/predict.py \
 
 ```bash
 python scripts/evaluate.py \
-    --test_truth  data/CLIP_dataset/TE440_less_than_380.txt \
-    --pred_files  data/predictions/core_lip_TE440_less_than_380.csv \
+    --test_truth  data/CLIP_dataset/TE440_less_than_1024.txt \
+    --pred_files  data/predictions/core_lip_TE440_less_than_1024.csv \
                   data/predictions/CLIP_TE440.csv \
                   data/predictions/MoRFchibi_TE440.csv \
-    --names       "CORE-LIP STARLING v1" CLIP MoRFchibi \
+    --names       "CORE-LIP IDPFold2 v1" "CLIP" "MoRFchibi V2.0" \
     --output_dir  results/
 ```
 

@@ -24,7 +24,8 @@ from sklearn.metrics import (
     roc_curve,
 )
 
-from core_lip.evaluation import ResidueExample
+from core_lip.eval.structures import ResidueExample
+
 
 # ---------------------------------------------------------------------------
 # Shared colour palette
