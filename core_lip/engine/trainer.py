@@ -106,8 +106,8 @@ class CORE_LIP_Trainer:
             y_list,
             ids=ids,
             plm_h5_path=(
-                self.train_cfg.plm_h5_path
-                if hasattr(self.train_cfg, "data/embeddings/esm3-large-2024-03.h5")
+                "data/embeddings/esm3-large-2024-03_merged.h5"
+                if "plm_embedding" in self.model_cfg.inputs_features
                 else None
             ),
         )
@@ -294,6 +294,7 @@ class CORE_LIP_Trainer:
         checkpoint["best_threshold"] = best_thr
         torch.save(checkpoint, self.model_save_path)
         print(f"Final threshold (CV-MCC): {best_thr:.6f}")
+        return best_auc
 
     def plot(self):
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
@@ -342,6 +343,8 @@ def train_one_epoch(
         tokens = seq.long().to(device)
         mask = mask.to(device)
         y = y.to(device)
+        if plm_pad is not None:
+            plm_pad = plm_pad.to(device)
 
         logits = model(tokens, x_scalar, x_local, x_pairwise, mask, plm_pad)
         logits = logits.squeeze(-1)  # [batch, length]

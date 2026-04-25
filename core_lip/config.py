@@ -47,7 +47,7 @@ class ProteinModelConfig(BaseModel):
     scalar_mlp_hidden: int = -1
 
     # Add pre trainned embeddings
-    plm_dim: int = 2560
+    plm_dim: int = 6144
 
     # ── Post-Initialization & Validation ──────────────────────────────────
     @model_validator(mode="after")

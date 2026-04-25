@@ -57,6 +57,8 @@ def evaluate(
         tokens = seq.long().to(device)
         mask = mask.to(device)
         y = y.to(device)
+        if plm_pad is not None:
+            plm_pad = plm_pad.to(device)
 
         logits = model(tokens, x_scalar, x_local, x_pairwise, mask, plm_pad)
         logits = logits.squeeze(-1)  # [batch, length]
@@ -136,6 +138,8 @@ def select_threshold_cv(
             tokens = seq.long().to(device)
             mask = mask.to(device)
             y = y.to(device)
+            if plm_pad is not None:
+                plm_pad = plm_pad.to(device)
 
             logits = model(tokens, x_scalar, x_local, x_pairwise, mask, plm_pad)
             logits = logits.squeeze(-1)

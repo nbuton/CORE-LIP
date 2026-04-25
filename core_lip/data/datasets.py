@@ -85,7 +85,9 @@ class ProteinDataset(Dataset):
         plm_val = None
         if self.plm_h5_path:
             with h5py.File(self.plm_h5_path, "r") as f:
-                plm_val = torch.from_numpy(f[self.ids[idx]][:]).float()
+                target_id = str(self.ids[idx])
+                embedding_data = f[target_id]["embedding"][:]
+                plm_val = torch.from_numpy(embedding_data).float()
 
         features = (
             torch.from_numpy(x_s).float(),

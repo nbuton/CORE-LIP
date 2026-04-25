@@ -13,7 +13,8 @@ def main() -> None:
     trainer = CORE_LIP_Trainer(cfg, args.config, device=args.device)
     print(f"Config: {args.config}")
     print(f"Device: {args.device}")
-    trainer.run()
+    best_auc = trainer.run()
+    print("best_auc:", best_auc)
     trainer.plot()
 
 

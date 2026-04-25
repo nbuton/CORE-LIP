@@ -233,16 +233,18 @@ class PairwiseContextProjector(nn.Module):
         half = self.half
         window = self.window
 
+        # 1. Pad the last dimension
         padded = F.pad(x_pairwise, (half, half), mode="constant", value=0.0)
-        flat2 = padded.reshape(B * C, L, L + window)
-        slices2 = flat2.unfold(2, window + 1, 1)  # [BC, L, L, window+1]
 
-        row_idx = torch.arange(L, device=x_pairwise.device)
-        row_idx_exp = row_idx.view(1, L, 1, 1).expand(B * C, -1, 1, window + 1)
-        windows_diag = slices2.gather(2, row_idx_exp).squeeze(2)
+        # 2. Flatten the last two dimensions
+        padded_flat = padded.view(B, C, -1)
 
-        windows_diag = windows_diag.reshape(B, C, L, window + 1)
-        return windows_diag.permute(0, 2, 1, 3)  # [B, L, C, window+1]
+        # 3. Extract the diagonal windows using a single strided unfold
+        # FIX: PyTorch Tensor.unfold only accepts positional arguments
+        windows_diag = padded_flat.unfold(-1, window + 1, L + window + 1)
+
+        # 4. Permute to the target shape and ensure it is contiguous in memory
+        return windows_diag.permute(0, 2, 1, 3).contiguous()
 
     def forward(self, x_pairwise: torch.Tensor) -> torch.Tensor:
         """x_pairwise: [B, C, L, L]  →  [B, L, E]"""
@@ -611,8 +613,7 @@ class ProteinMultiScaleTransformer(nn.Module):
         if "pairwise_features" in self.inputs_features:
             x = x + self.pairwise_init_proj(x_pairwise_scaled)
 
-        # 🟢 NEW: Add projected PLM embeddings if provided and activated
-        if "plm_embedding" in self.inputs_features and plm_pad is not None:
+        if "plm_embedding" in self.inputs_features:
             x = x + self.plm_proj(plm_pad)
 
         x = self.embed_norm(x)
