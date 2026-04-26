@@ -70,11 +70,12 @@ def get_config(yaml_path: str) -> FullConfig:
 
 
 class CORE_LIP_Trainer:
-    def __init__(self, cfg, config_path, device="cpu"):
+    def __init__(self, cfg, config_path, threshold_selection=True, device="cpu"):
         self.cfg = cfg
         self.train_cfg = cfg.training
         self.model_cfg = cfg.model
         self.device = torch.device(device)
+        self.threshold_selection = threshold_selection
 
         # Paths
         self.config_dir = os.path.dirname(os.path.abspath(config_path))
@@ -283,17 +284,18 @@ class CORE_LIP_Trainer:
                 if epoch == self.train_cfg.epochs:
                     self.save_checkpoint(is_final=True)
 
-        # Post-training: Threshold selection
-        checkpoint = torch.load(
-            self.model_save_path, map_location=self.device, weights_only=False
-        )
-        self.model.load_state_dict(checkpoint["model_state_dict"])
-        best_thr = select_threshold_cv(
-            self.model, self.train_loader, self.device, seed=self.train_cfg.seed
-        )
-        checkpoint["best_threshold"] = best_thr
-        torch.save(checkpoint, self.model_save_path)
-        print(f"Final threshold (CV-MCC): {best_thr:.6f}")
+        if self.threshold_selection:
+            # Post-training: Threshold selection
+            checkpoint = torch.load(
+                self.model_save_path, map_location=self.device, weights_only=False
+            )
+            self.model.load_state_dict(checkpoint["model_state_dict"])
+            best_thr = select_threshold_cv(
+                self.model, self.train_loader, self.device, seed=self.train_cfg.seed
+            )
+            checkpoint["best_threshold"] = best_thr
+            torch.save(checkpoint, self.model_save_path)
+            print(f"Final threshold (CV-MCC): {best_thr:.6f}")
         return best_auc
 
     def plot(self):
