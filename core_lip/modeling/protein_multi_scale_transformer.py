@@ -475,13 +475,6 @@ class TransformerBlock(nn.Module):
         mask:       [B, L]
         Returns:    (x, x_pairwise) same shapes as input
         """
-        # Zero out padding in pairwise features explicitly
-        # mask: [B, L] → [B, 1, L, 1] and [B, 1, 1, L]
-        if mask is not None:
-            m = mask.float()
-            pairwise_mask = m.unsqueeze(1).unsqueeze(-1) * m.unsqueeze(1).unsqueeze(2)
-            # pairwise_mask: [B, 1, L, L]
-            x_pairwise = x_pairwise * pairwise_mask
         if self.activate_pairwise_bias:
             attn_bias = self.pairwise_cnn(x_pairwise)  # [B, H, L, L]
         else:
@@ -526,26 +519,26 @@ class ProteinMultiScaleTransformer(nn.Module):
     def __init__(self, cfg: ProteinModelConfig, stats):
         super().__init__()
         self.cfg = cfg
-        E = cfg.embed_dim
+        self.E = cfg.embed_dim
         self.inputs_features = cfg.inputs_features
 
         # ── Input embeddings ──────────────────────────────────────────────
         only_pos_embedding = "seq_emb" not in self.inputs_features
         self.seq_emb = SequenceEmbedding(
-            cfg.vocab_size, E, cfg.max_seq_len, cfg.dropout, only_pos_embedding
+            cfg.vocab_size, self.E, cfg.max_seq_len, cfg.dropout, only_pos_embedding
         )
         # Assuming cfg contains 'plm_dim' (e.g., 1280 for ESM-2 or 1536 for ESM-3)
         if "plm_embedding" in self.inputs_features:
             self.plm_proj = nn.Sequential(
-                nn.Linear(cfg.plm_dim, E),
+                nn.Linear(cfg.plm_dim, self.E),
                 nn.GELU(),
-                nn.Linear(E, E),
+                nn.Linear(self.E, self.E),
                 nn.Dropout(cfg.dropout),
             )
 
         self.scalar_proj = ScalarFeatureProjector(
             cfg.nb_scalar,
-            E,
+            self.E,
             cfg.scalar_mlp_hidden,
             cfg.dropout,
             stats["scalar"]["means"],
@@ -553,7 +546,7 @@ class ProteinMultiScaleTransformer(nn.Module):
         )
         self.local_proj = LocalFeatureProjector(
             cfg.nb_local,
-            E,
+            self.E,
             cfg.local_mlp_hidden,
             stats["local"]["means"],
             stats["local"]["stds"],
@@ -561,7 +554,7 @@ class ProteinMultiScaleTransformer(nn.Module):
         )
         self.pairwise_init_proj = PairwiseContextProjector(
             cfg.nb_pairwise,
-            E,
+            self.E,
             cfg.dropout,
             cfg.window_size_pairwise_input,
         )
@@ -570,7 +563,7 @@ class ProteinMultiScaleTransformer(nn.Module):
             initial_means=stats["pairwise"]["means"],
             initial_stds=stats["pairwise"]["stds"],
         )
-        self.embed_norm = nn.LayerNorm(E)
+        self.embed_norm = nn.LayerNorm(self.E)
 
         # ── Transformer blocks ────────────────────────────────────────────
         self.blocks = nn.ModuleList(
@@ -578,7 +571,7 @@ class ProteinMultiScaleTransformer(nn.Module):
         )
 
         # ── Pooling + head ────────────────────────────────────────────────
-        self.head = ClassificationHead(E, cfg.num_classes, cfg.dropout)
+        self.head = ClassificationHead(self.E, cfg.num_classes, cfg.dropout)
 
     def forward(
         self,
@@ -601,8 +594,10 @@ class ProteinMultiScaleTransformer(nn.Module):
             0, 3, 1, 2
         )  # [B, C, L, L] back for extraction
 
+        x = torch.zeros((B, L, self.E), device=tokens.device)
         # 1. Build initial [B, L, E] embedding
-        x = self.seq_emb(tokens)  # sequence + positional
+        if "token_embedding" in self.inputs_features:
+            x = self.seq_emb(tokens)  # sequence + positional
 
         if "scalar_features" in self.inputs_features:
             x = x + self.scalar_proj(x_scalar, L)

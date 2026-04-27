@@ -26,7 +26,6 @@ from torch.utils.data import DataLoader, Subset
 
 from core_lip.config import FullConfig
 from core_lip.data.datasets import ProteinDataset, collate_proteins
-from core_lip.data.features import LOCAL_FEATURES, PAIRWISE_FEATURES, SCALAR_FEATURES
 from core_lip.data.io import (
     cluster_sequences_mmseqs2,
     get_all_feature_stats,
@@ -96,7 +95,11 @@ class CORE_LIP_Trainer:
         with h5py.File(self.train_cfg.h5_properties, "r") as h5:
             df = read_protein_data(self.train_cfg.training_dataset)
             X_scalar, X_local, X_pairwise, seqs, y_list, ids = prepare_data(
-                df, h5, SCALAR_FEATURES, LOCAL_FEATURES, PAIRWISE_FEATURES
+                df,
+                h5,
+                self.train_cfg.SCALAR_FEATURES,
+                self.train_cfg.LOCAL_FEATURES,
+                self.train_cfg.PAIRWISE_FEATURES,
             )
 
         self.dataset = ProteinDataset(
@@ -165,9 +168,9 @@ class CORE_LIP_Trainer:
 
     def build_model(self):
         self.model_cfg.num_classes = 1
-        self.model_cfg.nb_scalar = len(SCALAR_FEATURES)
-        self.model_cfg.nb_local = len(LOCAL_FEATURES)
-        self.model_cfg.nb_pairwise = len(PAIRWISE_FEATURES)
+        self.model_cfg.nb_scalar = len(self.train_cfg.SCALAR_FEATURES)
+        self.model_cfg.nb_local = len(self.train_cfg.LOCAL_FEATURES)
+        self.model_cfg.nb_pairwise = len(self.train_cfg.PAIRWISE_FEATURES)
 
         self.model = ProteinMultiScaleTransformer(self.model_cfg, self.stats).to(
             self.device
@@ -212,9 +215,9 @@ class CORE_LIP_Trainer:
             "model_state_dict": self.model.state_dict(),
             "cfg": self.model_cfg,
             "stats": self.stats,
-            "scalar_features": SCALAR_FEATURES,
-            "local_features": LOCAL_FEATURES,
-            "pairwise_features": PAIRWISE_FEATURES,
+            "scalar_features": self.train_cfg.SCALAR_FEATURES,
+            "local_features": self.train_cfg.LOCAL_FEATURES,
+            "pairwise_features": self.train_cfg.PAIRWISE_FEATURES,
             "best_val_auc": auc,
         }
         torch.save(save_dict, self.model_save_path)

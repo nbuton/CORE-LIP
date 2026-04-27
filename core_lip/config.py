@@ -79,6 +79,9 @@ class TrainingConfig(BaseModel):
     seed: int
     h5_properties: Path
     training_dataset: Path
+    SCALAR_FEATURES: List
+    LOCAL_FEATURES: List
+    PAIRWISE_FEATURES: List
 
 
 # You can now hook this up to your main config just like before:
