@@ -60,7 +60,9 @@ def main() -> None:
 
             try:
                 # Initialize and run
-                trainer = CORE_LIP_Trainer(run_cfg, args.config, device=args.device)
+                trainer = CORE_LIP_Trainer(
+                    run_cfg, args.config, device=args.device, threshold_selection=False
+                )
                 best_auc = trainer.run()
 
                 results.append(
