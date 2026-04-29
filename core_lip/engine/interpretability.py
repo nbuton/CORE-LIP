@@ -34,30 +34,22 @@ from __future__ import annotations
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
-# Captum imports — install with: pip install captum
-try:
-    from captum.attr import (
-        FeatureAblation,
-        GradientShap,
-        IntegratedGradients,
-        Occlusion,
-    )
+from captum.attr import (
+    FeatureAblation,
+    GradientShap,
+    IntegratedGradients,
+    Occlusion,
+)
 
-    _CAPTUM_AVAILABLE = True
-except ImportError:
-    _CAPTUM_AVAILABLE = False
-    warnings.warn(
-        "captum not found. Gradient-based interpreters will be unavailable. "
-        "Install with: pip install captum"
-    )
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -312,13 +304,10 @@ class IntegratedGradientsInterpreter(BaseInterpreter):
         internal_batch_size: int = 4,
         **kwargs,
     ) -> AttributionResult:
-        if not _CAPTUM_AVAILABLE:
-            raise RuntimeError("captum is required for IntegratedGradientsInterpreter")
-
         all_scalar, all_local, all_pairwise = [], [], []
         all_masks, all_ids = [], []
 
-        for batch in loader:
+        for batch in tqdm(loader, desc="Batches"):
             (x_sc, x_lo, x_pw, tokens, mask, prot_ids, plm_pad) = self._unpack_batch(
                 batch, self.device
             )
@@ -398,12 +387,9 @@ class GradientSHAPInterpreter(BaseInterpreter):
         n_baselines: int = 10,
         **kwargs,
     ) -> AttributionResult:
-        if not _CAPTUM_AVAILABLE:
-            raise RuntimeError("captum is required for GradientSHAPInterpreter")
-
         # Collect a pool of baseline tensors from the first pass
         baseline_sc, baseline_lo, baseline_pw, baseline_tok = [], [], [], []
-        for batch in loader:
+        for batch in tqdm(loader, desc="Batches"):
             (x_sc, x_lo, x_pw, tokens, mask, _, _) = self._unpack_batch(
                 batch, self.device
             )
@@ -422,7 +408,7 @@ class GradientSHAPInterpreter(BaseInterpreter):
         all_scalar, all_local, all_pairwise = [], [], []
         all_masks, all_ids = [], []
 
-        for batch in loader:
+        for batch in tqdm(loader, desc="Batches"):
             (x_sc, x_lo, x_pw, tokens, mask, prot_ids, plm_pad) = self._unpack_batch(
                 batch, self.device
             )
@@ -481,13 +467,10 @@ class FeatureAblationInterpreter(BaseInterpreter):
     """
 
     def run(self, loader: DataLoader, **kwargs) -> AttributionResult:
-        if not _CAPTUM_AVAILABLE:
-            raise RuntimeError("captum is required for FeatureAblationInterpreter")
-
         all_scalar, all_local, all_pairwise = [], [], []
         all_masks, all_ids = [], []
 
-        for batch in loader:
+        for batch in tqdm(loader, desc="Batches"):
             (x_sc, x_lo, x_pw, tokens, mask, prot_ids, plm_pad) = self._unpack_batch(
                 batch, self.device
             )
@@ -570,12 +553,9 @@ class OcclusionInterpreter(BaseInterpreter):
         window_size: int = 5,
         **kwargs,
     ) -> AttributionResult:
-        if not _CAPTUM_AVAILABLE:
-            raise RuntimeError("captum is required for OcclusionInterpreter")
-
         all_local, all_masks, all_ids = [], [], []
 
-        for batch in loader:
+        for batch in tqdm(loader, desc="Batches"):
             (x_sc, x_lo, x_pw, tokens, mask, prot_ids, plm_pad) = self._unpack_batch(
                 batch, self.device
             )
@@ -679,7 +659,7 @@ class AttentionRolloutInterpreter(BaseInterpreter):
     def run(self, loader: DataLoader, **kwargs) -> AttributionResult:
         all_rollout, all_masks, all_ids = [], [], []
 
-        for batch in loader:
+        for batch in tqdm(loader, desc="Batches"):
             (x_sc, x_lo, x_pw, tokens, mask, prot_ids, plm_pad) = self._unpack_batch(
                 batch, self.device
             )
@@ -751,7 +731,7 @@ class FeatureValueCorrelationAnalyzer(BaseInterpreter):
         all_probs, all_masks, all_ids = [], [], []
 
         with torch.no_grad():
-            for batch in loader:
+            for batch in tqdm(loader, desc="Batches"):
                 (x_sc, x_lo, x_pw, tokens, mask, prot_ids, plm_pad) = (
                     self._unpack_batch(batch, self.device)
                 )
@@ -872,7 +852,7 @@ class FeatureRangeProfiler(BaseInterpreter):
         all_probs, all_masks, all_ids = [], [], []
 
         with torch.no_grad():
-            for batch in loader:
+            for batch in tqdm(loader, desc="Batches"):
                 (x_sc, x_lo, x_pw, tokens, mask, prot_ids, plm_pad) = (
                     self._unpack_batch(batch, self.device)
                 )
@@ -946,103 +926,3 @@ class FeatureRangeProfiler(BaseInterpreter):
     def get_profiles(self, result: AttributionResult) -> pd.DataFrame:
         """Concatenate all stream profiles into one DataFrame."""
         return pd.concat(result.metadata["profiles"].values(), ignore_index=True)
-
-
-# ---------------------------------------------------------------------------
-# Convenience: run all (or a subset) of registered interpreters
-# ---------------------------------------------------------------------------
-
-
-def run_all(
-    model: nn.Module,
-    loader: DataLoader,
-    device: torch.device,
-    scalar_names: List[str],
-    local_names: List[str],
-    pairwise_names: List[str],
-    methods: Optional[List[str]] = None,
-    method_kwargs: Optional[Dict[str, Dict]] = None,
-) -> Dict[str, AttributionResult]:
-    """
-    Run a set of interpreters over *loader* and return all results.
-
-    Parameters
-    ----------
-    model           : trained model in eval mode
-    loader          : DataLoader (same collate_fn as training/inference)
-    device          : torch device
-    scalar_names    : list of scalar feature names
-    local_names     : list of local  feature names
-    pairwise_names  : list of pairwise feature names
-    methods         : list of method names to run; defaults to all registered
-    method_kwargs   : dict of {method_name: {kwarg: value}} for per-method params
-
-    Returns
-    -------
-    dict mapping method_name → AttributionResult
-    """
-    methods = methods or list(REGISTRY.keys())
-    method_kwargs = method_kwargs or {}
-    results: Dict[str, AttributionResult] = {}
-
-    for name in methods:
-        if name not in REGISTRY:
-            warnings.warn(f"Unknown method '{name}' — skipping.")
-            continue
-        print(f"[lip_interpretability] Running: {name} ...", flush=True)
-        cls = REGISTRY[name]
-        interpreter = cls(
-            model=model,
-            scalar_names=scalar_names,
-            local_names=local_names,
-            pairwise_names=pairwise_names,
-            device=device,
-        )
-        try:
-            results[name] = interpreter.run(loader, **method_kwargs.get(name, {}))
-            print(f"[lip_interpretability]   ✓ {name} done")
-        except Exception as e:
-            warnings.warn(f"[lip_interpretability] {name} failed: {e}")
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Summary report helper
-# ---------------------------------------------------------------------------
-
-
-def summary_report(results: Dict[str, AttributionResult]) -> pd.DataFrame:
-    """
-    Build a single ranked feature-importance DataFrame from all available
-    attribution results.  Scores are min-max normalised per method then
-    averaged for a consensus ranking.
-
-    Returns a DataFrame with columns:
-        stream, feature, <method1>_score, <method2>_score, ..., consensus_score
-    """
-    dfs = {}
-    for name, res in results.items():
-        if name in (
-            "feature_value_correlation",
-            "feature_range_profiler",
-            "attention_rollout",
-        ):
-            continue  # non-gradient methods handled separately
-        df = res.mean_per_feature()[["stream", "feature", "mean_abs_attr"]]
-        df = df.rename(columns={"mean_abs_attr": name})
-        dfs[name] = df.set_index(["stream", "feature"])
-
-    if not dfs:
-        return pd.DataFrame()
-
-    combined = pd.concat(dfs.values(), axis=1)
-
-    # Normalise each method column 0→1
-    for col in combined.columns:
-        col_range = combined[col].max() - combined[col].min()
-        if col_range > 0:
-            combined[col] = (combined[col] - combined[col].min()) / col_range
-
-    combined["consensus_score"] = combined.mean(axis=1)
-    return combined.sort_values("consensus_score", ascending=False).reset_index()

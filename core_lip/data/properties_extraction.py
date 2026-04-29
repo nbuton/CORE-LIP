@@ -100,14 +100,32 @@ def process_single_protein(protein_dir: Path) -> tuple[str, dict]:
 
 
 def save_properties_to_h5(dico_properties: dict, output_filepath: str | Path) -> None:
-    """Saves nested feature dictionary to a compressed HDF5 file."""
-    with h5py.File(output_filepath, "w") as h5f:
+    """
+    Saves or updates nested feature dictionary to an HDF5 file.
+    If the file exists, it adds new keys or updates existing ones.
+    """
+    # Use "a" mode: Read/write if exists, create otherwise
+    with h5py.File(output_filepath, "a") as h5f:
         for protein_id, props in dico_properties.items():
-            grp = h5f.create_group(protein_id)
+
+            # Get existing group or create a new one
+            if protein_id in h5f:
+                grp = h5f[protein_id]
+            else:
+                grp = h5f.create_group(protein_id)
+
             for name, value in props.items():
                 val_arr = (
                     np.array(value) if not isinstance(value, np.ndarray) else value
                 )
+
+                # Check if the dataset already exists in the group
+                if name in grp:
+                    # HDF5 datasets cannot be resized/overwritten easily if shapes differ.
+                    # Usually, it's safest to delete and recreate if you want to update.
+                    del grp[name]
+
+                # Create the dataset
                 if val_arr.ndim > 0:
                     grp.create_dataset(
                         name, data=val_arr, compression="gzip", compression_opts=4

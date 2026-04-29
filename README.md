@@ -160,6 +160,19 @@ python scripts/evaluate.py \
     --output_dir  results/
 ```
 
+### 6 - Interpretability
+
+```bash
+python scripts/run_interpretability.py \
+  --model data/models/CORE_LIP_IDPFold2/core_lip.pt \
+  --config data/models/CORE_LIP_IDPFold2/config.yaml \
+  --h5 data/properties/IDPFold2_derived_properties.h5 \
+  --plm-h5 data/embeddings/esm3-large-2024-03_merged.h5 \
+  --datasets data/CLIP_dataset/TR1000_in_h5.txt \
+  --output-dir data/interpretability/
+```
+
+
 ---
 
 ## Model architecture
