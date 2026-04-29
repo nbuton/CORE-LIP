@@ -245,7 +245,7 @@ class CORE_LIP_Trainer:
             anneal_strategy="cos",
         )
 
-        best_auc = float("-inf")
+        best_pr_auc = float("-inf")
 
         for epoch in range(1, self.train_cfg.epochs + 1):
             t_loss = train_one_epoch(
@@ -263,19 +263,20 @@ class CORE_LIP_Trainer:
 
             # Only evaluate if val_loader exists
             if self.val_loader:
-                v_loss, v_auc, v_pr = evaluate(
+                val_loss, val_roc_auc, val_pr_auc = evaluate(
                     self.model, self.val_loader, self.criterion, self.device
                 )
-                self.history["val_loss"].append(v_loss)
-                self.history["val_auc"].append(v_auc)
+                self.history["val_loss"].append(val_loss)
+                self.history["val_roc_auc"].append(val_roc_auc)
+                self.history["val_pr_auc"].append(val_pr_auc)
 
                 # Restoration of ROC-AUC and PR-AUC labels
-                log_str += f" | val_loss={v_loss:.4f} | val_ROC-AUC={v_auc:.4f} | val_PR-AUC={v_pr:.4f}"
+                log_str += f" | val_loss={val_loss:.4f} | val_ROC-AUC={val_roc_auc:.4f} | val_PR-AUC={val_pr_auc:.4f}"
                 print(log_str)
 
-                if v_auc > best_auc:
-                    best_auc = v_auc
-                    self.save_checkpoint(auc=best_auc)
+                if val_pr_auc > best_pr_auc:
+                    best_pr_auc = val_pr_auc
+                    self.save_checkpoint(auc=best_pr_auc)
                 else:
                     # Restoration of the "did not improve" notification
                     print(
@@ -299,7 +300,7 @@ class CORE_LIP_Trainer:
             checkpoint["best_threshold"] = best_thr
             torch.save(checkpoint, self.model_save_path)
             print(f"Final threshold (CV-MCC): {best_thr:.6f}")
-        return best_auc
+        return best_pr_auc
 
     def plot(self):
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
@@ -309,9 +310,9 @@ class CORE_LIP_Trainer:
         ax1.set_title("Loss")
         ax1.legend()
 
-        if self.history["val_auc"]:
-            ax2.plot(self.history["val_auc"])
-            ax2.set_title("Validation ROC-AUC")
+        if self.history["val_pr_auc"]:
+            ax2.plot(self.history["val_pr_auc"])
+            ax2.set_title("Validation PR-AUC")
 
         plt.tight_layout()
         plt.show()

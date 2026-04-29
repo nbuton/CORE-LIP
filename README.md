@@ -156,7 +156,7 @@ python scripts/evaluate.py \
     --pred_files  data/predictions/core_lip_TE440_less_than_1024.csv \
                   data/predictions/CLIP_TE440.csv \
                   data/predictions/MoRFchibi_TE440.csv \
-    --names       "CORE-LIP IDPFold2 v1" "CLIP" "MoRFchibi V2.0" \
+    --names       "CORE-LIP IDPFold2" "CLIP" "MoRFchibi V2.0" \
     --output_dir  results/
 ```
 
