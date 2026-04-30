@@ -88,7 +88,12 @@ class CORE_LIP_Trainer:
         self.scheduler = None
         self.criterion = None
         self.stats = None
-        self.history = {"train_loss": [], "val_loss": [], "val_auc": []}
+        self.history = {
+            "train_loss": [],
+            "val_loss": [],
+            "val_pr_auc": [],
+            "val_roc_auc": [],
+        }
 
     def prepare_loaders(self):
         """Handles data loading and OOD splitting logic."""
@@ -180,8 +185,8 @@ class CORE_LIP_Trainer:
         )
 
     def build_criterion(self):
-        total_pos = sum(y.sum() for y in self.y_list)
-        total_neg = sum((1 - np.array(y)).sum() for y in self.y_list)
+        total_pos = sum(y[y != -1].sum() for y in self.y_list)
+        total_neg = sum((1 - np.array(y[y != -1])).sum() for y in self.y_list)
 
         loss_type = self.train_cfg.loss_type
         params = self.train_cfg.loss_params
@@ -196,13 +201,15 @@ class CORE_LIP_Trainer:
             self.criterion = AUCMarginLoss(
                 n_pos=total_pos, n_neg=total_neg, reduction="none", **params
             )
-        elif loss_type == "bce_with_logits":
+        elif loss_type == "bce_with_logits_with_weight":
             pos_weight = torch.tensor(
                 [total_neg / total_pos], device=self.device, dtype=torch.float32
             )
             self.criterion = nn.BCEWithLogitsLoss(
                 pos_weight=pos_weight, reduction="none"
             )
+        elif loss_type == "bce_with_logits":
+            self.criterion = nn.BCEWithLogitsLoss(reduction="none")
         else:
             raise ValueError(f"Unknown loss: {loss_type}")
 
@@ -358,8 +365,23 @@ def train_one_epoch(
         if not torch.isfinite(logits).all():
             raise RuntimeError(f"Non-finite logits at batch {batch_idx}.")
 
-        loss_raw = criterion(logits, y.float())
-        loss = (loss_raw * mask).sum() / mask.sum() / accumulation_steps
+        # 1. Identify valid labels (ignore -1)
+        valid_label_mask = (y != -1).float()
+
+        # 2. Combine the padding mask and label mask
+        # If either is 0.0 (padded OR unknown), the combined mask becomes 0.0
+        combined_mask = mask  # * valid_label_mask
+
+        # 3. Clean y: Replace -1 with 0.0 so BCEWithLogitsLoss doesn't error out
+        y_clean = y.clone().float()
+        y_clean[y == -1] = 0.0
+
+        loss_raw = criterion(logits, y_clean)
+        loss = (
+            (loss_raw * combined_mask).sum()
+            / (combined_mask.sum() + 1e-8)
+            / accumulation_steps
+        )
         if not torch.isfinite(loss):
             raise RuntimeError(f"Non-finite loss at batch {batch_idx}.")
 

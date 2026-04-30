@@ -531,6 +531,7 @@ class ProteinMultiScaleTransformer(nn.Module):
         if "plm_embedding" in self.inputs_features:
             self.plm_proj = nn.Sequential(
                 nn.Linear(cfg.plm_dim, self.E),
+                nn.Dropout(0.6),
                 nn.GELU(),
                 nn.Linear(self.E, self.E),
                 nn.Dropout(cfg.dropout),

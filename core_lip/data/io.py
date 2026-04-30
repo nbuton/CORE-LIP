@@ -169,7 +169,7 @@ def parse_prediction_csv(
     missing = [pid for pid in records if model_name not in records[pid].scores]
     if missing:
         raise ValueError(
-            f"Model '{model_name}' missing predictions for {len(missing)} proteins."
+            f"Model '{model_name}' missing predictions for {len(missing)} proteins. Missing: {missing}"
         )
 
 
@@ -192,7 +192,6 @@ def prepare_data(
 
     for _, row in df.iterrows():
         pid = row["protein_id"]
-
         seq_enc = np.array(
             [aa_to_int_dict.get(aa, 0) for aa in row["sequence"]], dtype=np.int64
         )
@@ -208,7 +207,11 @@ def prepare_data(
         else:
             pairwise_feats = np.empty((0,), dtype=np.float32)
 
-        labels = np.array([int(c) for c in row["LIP_annotations"]])
+        # Convert your list, mapping '-' to -1
+        mapping = {"0": 0, "1": 1, "-": -1}
+        labels = np.array(
+            [mapping[c] for c in row["LIP_annotations"]], dtype=np.float32
+        )
 
         X_scalar_list.append(scalar_feats)
         X_local_list.append(local_feats)

@@ -63,7 +63,10 @@ def evaluate(
         logits = model(tokens, x_scalar, x_local, x_pairwise, mask, plm_pad)
         logits = logits.squeeze(-1)  # [batch, length]
 
-        loss_raw = criterion(logits, y.float())
+        y_clean = y.clone().float()
+        y_clean[y == -1] = 0.0
+
+        loss_raw = criterion(logits, y_clean)
         loss = (loss_raw * mask).sum() / mask.sum()
         if not torch.isfinite(loss):
             raise RuntimeError("Non-finite validation loss.")
@@ -82,6 +85,9 @@ def evaluate(
     y_score = torch.cat(y_score_all).numpy()
     y_prob = torch.sigmoid(torch.from_numpy(y_score)).numpy()
 
+    y_true[y_true == -1] = (
+        0  # We considere here that masked residue are not binding residues
+    )
     try:
         roc_auc = float(roc_auc_score(y_true, y_prob))
         pr_auc = float(average_precision_score(y_true, y_prob))
