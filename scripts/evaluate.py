@@ -72,10 +72,12 @@ def compute_residue_metrics(
             f"{len(missing)} protein(s): {missing[:5]}{'...' if len(missing) > 5 else ''}"
         )
     y_true = np.concatenate([r.y_true.astype(np.int8) for r in records.values()])
-    print(Counter(y_true))
+    count = Counter(y_true)
+    print(
+        f"There are {count[-1]} residues with an unknown label, these will be ignore for eval"
+    )
     y_mask = y_true != -1
     y_true = y_true[y_mask]
-    print(Counter(y_true))
     y_score = np.concatenate(
         [r.scores[model_name].astype(np.float64) for r in records.values()]
     )
