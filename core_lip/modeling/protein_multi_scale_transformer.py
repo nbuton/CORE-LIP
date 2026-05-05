@@ -86,10 +86,10 @@ class SequenceEmbedding(nn.Module):
         embed_dim: int,
         max_len: int,
         dropout: float = 0.1,
-        only_pos_embedding: bool = False,
+        use_pos_embedding: bool = False,
     ):
         super().__init__()
-        self.only_pos_embedding = only_pos_embedding
+        self.use_pos_embedding = use_pos_embedding
         self.token_emb = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
         self.dropout = nn.Dropout(dropout)
 
@@ -107,10 +107,9 @@ class SequenceEmbedding(nn.Module):
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
         """tokens: [B, L] (int)  →  [B, L, E]"""
         L = tokens.size(1)
-        if self.only_pos_embedding:
-            x = self.pe[:, :L].expand(tokens.size(0), -1, -1)
-        else:
-            x = self.token_emb(tokens) + self.pe[:, :L]
+        x = self.token_emb(tokens)
+        if self.use_pos_embedding:
+            x += self.pe[:, :L].expand(tokens.size(0), -1, -1)
         return self.dropout(x)
 
 
@@ -523,9 +522,9 @@ class ProteinMultiScaleTransformer(nn.Module):
         self.inputs_features = cfg.inputs_features
 
         # ── Input embeddings ──────────────────────────────────────────────
-        only_pos_embedding = "token_embedding" not in self.inputs_features
+        use_pos_embedding = "positional_embeddings" in self.inputs_features
         self.seq_emb = SequenceEmbedding(
-            cfg.vocab_size, self.E, cfg.max_seq_len, cfg.dropout, only_pos_embedding
+            cfg.vocab_size, self.E, cfg.max_seq_len, cfg.dropout, use_pos_embedding
         )
         # Assuming cfg contains 'plm_dim' (e.g., 1280 for ESM-2 or 1536 for ESM-3)
         if "plm_embedding" in self.inputs_features:
