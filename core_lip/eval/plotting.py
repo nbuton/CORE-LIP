@@ -26,7 +26,6 @@ from sklearn.metrics import (
 
 from core_lip.eval.structures import ResidueExample
 
-
 # ---------------------------------------------------------------------------
 # Shared colour palette
 # ---------------------------------------------------------------------------
@@ -91,12 +90,15 @@ def plot_roc_curves(
     handles: List[Line2D] = []
 
     y_true_global = np.concatenate([r.y_true.astype(np.int8) for r in records.values()])
+    y_mask = y_true_global != -1
+    y_true_global = y_true_global[y_mask]
 
     for i, name in enumerate(model_names):
         color = _color(i)
         lw = 2.2 if i == 0 else 1.6
         try:
             y_score = np.concatenate([r.scores[name] for r in records.values()])
+            y_score = y_score[y_mask]
             fpr, tpr, _ = roc_curve(y_true_global, y_score)
             auc = roc_auc_score(y_true_global, y_score)
             ax.plot(fpr, tpr, color=color, lw=lw, alpha=0.92)
@@ -156,6 +158,8 @@ def plot_pr_curves(
     plt.Figure
     """
     y_true_global = np.concatenate([r.y_true.astype(np.int8) for r in records.values()])
+    y_mask = y_true_global != -1
+    y_true_global = y_true_global[y_mask]
     pos_rate = float(y_true_global.mean())
 
     fig, ax = plt.subplots(figsize=(6.5, 5.5))
@@ -166,6 +170,7 @@ def plot_pr_curves(
         lw = 2.2 if i == 0 else 1.6
         try:
             y_score = np.concatenate([r.scores[name] for r in records.values()])
+            y_score = y_score[y_mask]
             precision, recall, _ = precision_recall_curve(y_true_global, y_score)
             ap = average_precision_score(y_true_global, y_score)
             ax.plot(recall, precision, color=color, lw=lw, alpha=0.92)
