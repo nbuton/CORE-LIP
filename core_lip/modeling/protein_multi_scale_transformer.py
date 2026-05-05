@@ -108,7 +108,7 @@ class SequenceEmbedding(nn.Module):
         """tokens: [B, L] (int)  →  [B, L, E]"""
         L = tokens.size(1)
         if self.only_pos_embedding:
-            x = self.pe[:, :L]
+            x = self.pe[:, :L].expand(tokens.size(0), -1, -1)
         else:
             x = self.token_emb(tokens) + self.pe[:, :L]
         return self.dropout(x)
@@ -523,7 +523,7 @@ class ProteinMultiScaleTransformer(nn.Module):
         self.inputs_features = cfg.inputs_features
 
         # ── Input embeddings ──────────────────────────────────────────────
-        only_pos_embedding = "seq_emb" not in self.inputs_features
+        only_pos_embedding = "token_embedding" not in self.inputs_features
         self.seq_emb = SequenceEmbedding(
             cfg.vocab_size, self.E, cfg.max_seq_len, cfg.dropout, only_pos_embedding
         )
