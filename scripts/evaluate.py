@@ -19,6 +19,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from pathlib import Path
 from typing import Dict, List
 
@@ -70,14 +71,19 @@ def compute_residue_metrics(
             f"Model '{model_name}' is missing predictions for "
             f"{len(missing)} protein(s): {missing[:5]}{'...' if len(missing) > 5 else ''}"
         )
-
     y_true = np.concatenate([r.y_true.astype(np.int8) for r in records.values()])
+    print(Counter(y_true))
+    y_mask = y_true != -1
+    y_true = y_true[y_mask]
+    print(Counter(y_true))
     y_score = np.concatenate(
         [r.scores[model_name].astype(np.float64) for r in records.values()]
     )
+    y_score = y_score[y_mask]
     y_pred = np.concatenate(
         [r.binary[model_name].astype(np.int8) for r in records.values()]
     )
+    y_pred = y_pred[y_mask]
 
     if len(y_true) == 0:
         raise ValueError(f"No residue-level predictions found for model '{model_name}'")

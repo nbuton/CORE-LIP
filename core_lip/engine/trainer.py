@@ -38,7 +38,6 @@ from core_lip.modeling.protein_multi_scale_transformer import (
     ProteinMultiScaleTransformer,
 )
 
-
 # ---------------------------------------------------------------------------
 # Reproducibility
 # ---------------------------------------------------------------------------
@@ -370,7 +369,7 @@ def train_one_epoch(
 
         # 2. Combine the padding mask and label mask
         # If either is 0.0 (padded OR unknown), the combined mask becomes 0.0
-        combined_mask = mask  # * valid_label_mask
+        combined_mask = mask * valid_label_mask
 
         # 3. Clean y: Replace -1 with 0.0 so BCEWithLogitsLoss doesn't error out
         y_clean = y.clone().float()

@@ -530,7 +530,7 @@ class ProteinMultiScaleTransformer(nn.Module):
         # Assuming cfg contains 'plm_dim' (e.g., 1280 for ESM-2 or 1536 for ESM-3)
         if "plm_embedding" in self.inputs_features:
             self.plm_proj = nn.Sequential(
-                nn.Linear(cfg.plm_dim, self.E),
+                nn.Linear(cfg.plm_dim, self.E),  # Try adding L1 on these weights?
                 nn.Dropout(0.6),
                 nn.GELU(),
                 nn.Linear(self.E, self.E),

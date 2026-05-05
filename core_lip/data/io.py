@@ -104,7 +104,9 @@ def _read_blocks(path: str | Path) -> List[List[str]]:
 
 
 def _parse_binary_string(s: str) -> np.ndarray:
-    return np.fromiter((1 if c == "1" else 0 for c in s.strip()), dtype=np.int8)
+    return np.fromiter(
+        (1 if c == "1" else -1 if c == "-" else 0 for c in s.strip()), dtype=np.int8
+    )
 
 
 def _parse_prob_string(s: str) -> np.ndarray:

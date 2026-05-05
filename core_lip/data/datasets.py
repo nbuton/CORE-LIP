@@ -80,6 +80,9 @@ class ProteinDataset(Dataset):
         x_l = np.nan_to_num(self.X_local_list[idx], nan=0.0, posinf=0.0, neginf=0.0)
         x_p = np.nan_to_num(self.X_pairwise_list[idx], nan=0.0, posinf=0.0, neginf=0.0)
         seq = self.seq_enc_list[idx]
+        assert (
+            x_l.shape[1] == seq.shape[0]
+        ), f"{self.ids[idx]} sequence has an error in properties shapes"
 
         # 1. Fetch PLM if path is provided
         plm_val = None
