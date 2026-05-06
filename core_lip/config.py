@@ -27,6 +27,7 @@ class ProteinModelConfig(BaseModel):
     max_seq_len: int = 1024
     window_size_pairwise_input: int = 1024
     activate_pairwise_bias: bool = True
+    activate_classical_attention: bool = True
 
     # ── Transformer blocks ────────────────────────────────────────────────
     num_blocks: int = 4
@@ -71,6 +72,8 @@ class TrainingConfig(BaseModel):
     epochs: int
     batch_size: int
     accumulation: int
+    scheduler_type: str
+    optimizer: str
     loss_type: str
     loss_params: Dict[str, Any] = {}
     val_prop: float

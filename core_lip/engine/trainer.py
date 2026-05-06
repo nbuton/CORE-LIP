@@ -23,6 +23,8 @@ import yaml
 from tqdm import tqdm
 import pandas as pd
 from torch.utils.data import DataLoader, Subset
+from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
+from popriskmin import PRM
 
 from core_lip.config import FullConfig
 from core_lip.data.datasets import ProteinDataset, collate_proteins
@@ -235,21 +237,59 @@ class CORE_LIP_Trainer:
         self.build_model()
         self.build_criterion()
 
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=self.train_cfg.lr,
-            weight_decay=self.train_cfg.weight_decay,
-        )
-        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            self.optimizer,
-            max_lr=self.train_cfg.lr,
-            epochs=self.train_cfg.epochs,
-            steps_per_epoch=math.ceil(
-                len(self.train_loader) / self.train_cfg.accumulation
-            ),
-            pct_start=0.1,
-            anneal_strategy="cos",
-        )
+        if self.train_cfg.optimizer == "AdamW":
+            self.optimizer = torch.optim.AdamW(
+                self.model.parameters(),
+                lr=self.train_cfg.lr,
+                weight_decay=self.train_cfg.weight_decay,
+            )
+        elif self.train_cfg.optimizer == "PRM":
+            self.optimizer = PRM(
+                self.model.parameters(),
+                lr=self.train_cfg.lr,
+                weight_decay=self.train_cfg.weight_decay,
+                softness=1.0,
+                batch_size=int(self.train_cfg.batch_size * self.train_cfg.accumulation),
+                warmup_steps=32,
+                rho=0.9,
+            )
+        else:
+            raise ValueError(f"Unknown {self.train_cfg.optimizer} optimizer type")
+
+        if self.train_cfg.scheduler_type == "warmup_cosine":
+            # Complexe scheduler
+            total_steps = math.ceil(
+                len(self.train_loader)
+                / self.train_cfg.accumulation
+                * self.train_cfg.epochs
+            )
+            # 1. Warmup for the first 10% of total steps
+            warmup_steps = math.ceil(total_steps * 0.1)
+            warmup_scheduler = LinearLR(
+                self.optimizer,
+                start_factor=0.1,
+                end_factor=1.0,
+                total_iters=warmup_steps,
+            )
+
+            # 2. Cosine decay for the remaining 90%
+            cosine_scheduler = CosineAnnealingLR(
+                self.optimizer, T_max=(total_steps - warmup_steps), eta_min=1e-6
+            )
+
+            # 3. Combine them
+            self.scheduler = SequentialLR(
+                self.optimizer,
+                schedulers=[warmup_scheduler, cosine_scheduler],
+                milestones=[warmup_steps],
+            )
+        elif self.train_cfg.scheduler_type == "no_scheduler":
+            # Dummy scheduler - Eq No
+            self.scheduler = torch.optim.lr_scheduler.LambdaLR(
+                self.optimizer, lr_lambda=lambda step: 1.0
+            )
+        else:
+            raise ValueError(f"Unknown {self.train_cfg.scheduler_type} scheduler type")
 
         best_pr_auc = float("-inf")
 
@@ -390,6 +430,7 @@ def train_one_epoch(
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             if not torch.isfinite(grad_norm):
                 raise RuntimeError(f"Non-finite gradient norm at batch {batch_idx}.")
+
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             scheduler.step()

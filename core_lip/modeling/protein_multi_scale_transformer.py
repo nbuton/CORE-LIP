@@ -274,11 +274,13 @@ class PairwiseCNN(nn.Module):
     Input : [B, C_in, L, L]
     Output: [B, num_heads, L, L]
 
-    Pipeline:
+    Pipeline (if dilations are provided):
       1) Depthwise conv — independent spatial processing per input channel
-      2) Three parallel dilated conv branches (dilations 1, 2, 3)
+      2) Parallel dilated conv branches
       3) Concatenate + GroupNorm + GELU
       4) 1×1 conv to num_heads
+
+    If dilations=[], the spatial CNN is skipped and a 1x1 projection is applied.
     """
 
     def __init__(
@@ -291,11 +293,17 @@ class PairwiseCNN(nn.Module):
         dilations: tuple[int, ...] = (1, 2, 3),
     ):
         super().__init__()
+        self.dilations = dilations
+
+        # If empty dilations sequence is passed, skip the CNN and just project.
+        if not self.dilations:
+            self.to_heads = nn.Conv2d(nb_pairwise, num_heads, kernel_size=1, bias=True)
+            return
+
         if kernel_size % 2 == 0:
             raise ValueError("kernel_size must be odd to preserve L×L shape.")
 
         pad = kernel_size // 2
-        self.dilations = dilations
 
         # Stage 1: independent spatial processing per channel
         self.depthwise = nn.Conv2d(
@@ -309,9 +317,9 @@ class PairwiseCNN(nn.Module):
         self.depthwise_norm = _make_group_norm(nb_pairwise)
         self.depthwise_act = nn.GELU()
 
-        # Stage 2: three dilated branches for multi-scale mixing
+        # Stage 2: dilated branches for multi-scale mixing
         branches = []
-        for d in dilations:
+        for d in self.dilations:
             branches.append(
                 nn.Sequential(
                     nn.Conv2d(
@@ -328,7 +336,7 @@ class PairwiseCNN(nn.Module):
             )
         self.branches = nn.ModuleList(branches)
 
-        merged_channels = cnn_channels * len(dilations)
+        merged_channels = cnn_channels * len(self.dilations)
         self.post_norm = _make_group_norm(merged_channels)
         self.post_act = nn.GELU()
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
@@ -338,6 +346,11 @@ class PairwiseCNN(nn.Module):
 
     def forward(self, x_pairwise: torch.Tensor) -> torch.Tensor:
         """x_pairwise: [B, nb_pairwise, L, L]  →  [B, num_heads, L, L]"""
+
+        # Bypass CNN logic if dilations is empty
+        if not self.dilations:
+            return self.to_heads(x_pairwise)
+
         x = self.depthwise_act(self.depthwise_norm(self.depthwise(x_pairwise)))
         feats = [branch(x) for branch in self.branches]
         x = torch.cat(feats, dim=1)
@@ -365,6 +378,7 @@ class BiasedMultiHeadAttention(nn.Module):
         num_heads: int,
         dropout: float = 0.1,
         activate_bias: bool = True,
+        activate_classical_attention: bool = True,
     ):
         super().__init__()
         assert embed_dim % num_heads == 0
@@ -380,6 +394,7 @@ class BiasedMultiHeadAttention(nn.Module):
         # One learnable gate per head
         self.bias_gate = nn.Parameter(torch.ones(num_heads) * 0.5)
         self.activate_bias = activate_bias
+        self.activate_classical_attention = activate_classical_attention
 
         self.attn_dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(embed_dim)
@@ -399,13 +414,16 @@ class BiasedMultiHeadAttention(nn.Module):
         def _proj_reshape(proj, t):
             return proj(t).reshape(B, L, H, D).transpose(1, 2)
 
-        Q = _proj_reshape(self.q_proj, x)
-        K = _proj_reshape(self.k_proj, x)
+        attn_logits = torch.zeros((B, H, L, L), device=x.device)
         V = _proj_reshape(self.v_proj, x)
+        if self.activate_classical_attention:
+            Q = _proj_reshape(self.q_proj, x)
+            K = _proj_reshape(self.k_proj, x)
 
-        attn_logits = torch.matmul(Q, K.transpose(-2, -1)) * self.scale
+            attn_logits += torch.matmul(Q, K.transpose(-2, -1)) * self.scale
+
         if self.activate_bias:
-            attn_logits = attn_logits + self.bias_gate.view(1, H, 1, 1) * bias
+            attn_logits += self.bias_gate.view(1, H, 1, 1) * bias
 
         if mask is not None:
             # Mask padding key positions: [B, 1, 1, L]
@@ -455,6 +473,7 @@ class TransformerBlock(nn.Module):
             num_heads=cfg.num_heads,
             dropout=cfg.dropout,
             activate_bias=cfg.activate_pairwise_bias,
+            activate_classical_attention=cfg.activate_classical_attention,
         )
         self.ffn = FeedForwardNetwork(
             embed_dim=cfg.embed_dim,
