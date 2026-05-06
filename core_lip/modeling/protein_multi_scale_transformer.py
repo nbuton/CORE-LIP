@@ -459,14 +459,23 @@ class BiasedMultiHeadAttention(nn.Module):
 class TransformerBlock(nn.Module):
     """
     One full Transformer block:
-        1. PairwiseCNN       — refines x_pairwise, produces per-head attention bias
-        2. BiasedMHA         — self-attention with the pairwise bias
-        3. FeedForwardNetwork — position-wise FFN (E → 2E → E)
+        1. PairwiseUpdateBlock   — updates x_pairwise from current x (new)
+        2. PairwiseCNN           — refines x_pairwise, produces per-head attention bias
+        3. BiasedMHA             — self-attention with the pairwise bias
+        4. FeedForwardNetwork    — position-wise FFN (E → 2E → E)
     """
 
     def __init__(self, cfg: ProteinModelConfig):
         super().__init__()
         self.activate_pairwise_bias = cfg.activate_pairwise_bias
+        self.update_pairwise = True
+
+        if self.update_pairwise:
+            self.pairwise_update = PairwiseUpdateBlock(
+                embed_dim=cfg.embed_dim,
+                nb_pairwise=cfg.nb_pairwise,
+                dropout=cfg.dropout,
+            )
         self.pairwise_cnn = PairwiseCNN(
             nb_pairwise=cfg.nb_pairwise,
             cnn_channels=cfg.pairwise_cnn_channels,
@@ -490,23 +499,30 @@ class TransformerBlock(nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,
-        x_pairwise: torch.Tensor,
+        x: torch.Tensor,  # [B, L, E]
+        x_pairwise: torch.Tensor,  # [B, C, L, L]
         mask: Optional[torch.Tensor] = None,
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        x:          [B, L, E]
-        x_pairwise: [B, nb_pairwise, L, L]
-        mask:       [B, L]
-        Returns:    (x, x_pairwise) same shapes as input
+        Returns (x, x_pairwise) — both updated.
+        The updated x_pairwise is passed to the next block instead of
+        reusing the same initial pairwise representation every time.
         """
+        # 1. Update pairwise from current sequence representation
+        if self.update_pairwise:
+            x_pairwise = self.pairwise_update(x_pairwise, x)
+
+        # 2. Compute attention bias from (updated) pairwise features
         if self.activate_pairwise_bias:
             attn_bias = self.pairwise_cnn(x_pairwise)  # [B, H, L, L]
         else:
             attn_bias = None
+
+        # 3. Sequence update
         x = self.attention(x, attn_bias, mask)
         x = self.ffn(x)
-        return x
+
+        return x, x_pairwise
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +545,76 @@ class ClassificationHead(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
+
+
+class PairwiseUpdateBlock(nn.Module):
+    """
+    Updates the pairwise representation [B, C, L, L] using the current
+    sequence embedding [B, L, E] via an outer product, mixed with a
+    residual CNN refinement of the pairwise features themselves.
+
+    Inspired by AlphaFold2's outer-product mean update in the Evoformer.
+    """
+
+    def __init__(self, embed_dim: int, nb_pairwise: int, dropout: float = 0.1):
+        super().__init__()
+        self.nb_pairwise = nb_pairwise
+
+        # Project sequence embedding to a low-dim space before outer product
+        # to keep the parameter count small
+        self.low_dim = max(4, nb_pairwise)
+        self.seq_to_low = nn.Linear(embed_dim, self.low_dim)
+
+        # Outer product gives [B, L, L, low_dim^2], project back to nb_pairwise
+        self.outer_proj = nn.Linear(self.low_dim, nb_pairwise)
+
+        # Lightweight CNN to refine pairwise features with local spatial context
+        self.cnn = nn.Sequential(
+            nn.Conv2d(
+                nb_pairwise,
+                nb_pairwise,
+                kernel_size=3,
+                padding=1,
+                groups=nb_pairwise,
+                bias=False,
+            ),  # depthwise
+            _make_group_norm(nb_pairwise),
+            nn.GELU(),
+            nn.Conv2d(nb_pairwise, nb_pairwise, kernel_size=1, bias=True),  # pointwise
+            nn.Dropout(dropout),
+        )
+        self.norm = nn.LayerNorm(nb_pairwise)
+
+    def forward(
+        self,
+        x_pairwise: torch.Tensor,  # [B, C, L, L]
+        x: torch.Tensor,  # [B, L, E]
+    ) -> torch.Tensor:
+        """Returns updated x_pairwise: [B, C, L, L]"""
+        B, C, L, _ = x_pairwise.shape
+
+        # ── 1. Outer product update from sequence embedding ──────────────
+        # Project to low-dim: [B, L, low_dim]
+        a = self.seq_to_low(x)
+
+        # Outer product: for each pair (i,j), concat a_i ⊗ a_j
+        # [B, L, 1, low] × [B, 1, L, low] → [B, L, L, low*low] via flatten
+        outer = a.unsqueeze(2) * a.unsqueeze(1)  # [B, L, L, low_dim]
+        # Note: full outer product would be a.unsqueeze(2) ⊗ a.unsqueeze(1)
+        # but elementwise product (low_dim must match) is cheaper and sufficient
+        outer = self.outer_proj(outer)  # [B, L, L, C]
+
+        # Symmetrize: pairwise features should be symmetric for contact/distance
+        outer = (outer + outer.transpose(1, 2)) / 2  # [B, L, L, C]
+
+        # Apply LayerNorm in the feature dimension then add as residual
+        outer = self.norm(outer).permute(0, 3, 1, 2)  # [B, C, L, L]
+
+        # ── 2. CNN refinement of existing pairwise features ──────────────
+        x_pairwise = x_pairwise + outer  # residual from sequence
+        x_pairwise = x_pairwise + self.cnn(x_pairwise)  # residual spatial refine
+
+        return x_pairwise
 
 
 # ---------------------------------------------------------------------------
@@ -650,16 +736,13 @@ class ProteinMultiScaleTransformer(nn.Module):
 
         x = self.embed_norm(x)
 
-        # 2. Transformer blocks
-        # Both branches iterate num_blocks times — the only difference is
-        # whether each iteration uses a fresh set of weights (independent)
-        # or the same shared block (weight-tied / Universal Transformer).
+        # 2. Transformer blocks — x_pairwise evolves across blocks
         if self.share_block_weights:
             for _ in range(self.num_blocks):
-                x = self.shared_block(x, x_pairwise_scaled, mask)
+                x, x_pairwise_scaled = self.shared_block(x, x_pairwise_scaled, mask)
         else:
             for block in self.blocks:
-                x = block(x, x_pairwise_scaled, mask)
+                x, x_pairwise_scaled = block(x, x_pairwise_scaled, mask)
 
         # 3. Classification head
         return self.head(x)
