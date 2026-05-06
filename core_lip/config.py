@@ -25,12 +25,12 @@ class ProteinModelConfig(BaseModel):
     # ── Embedding / model width ───────────────────────────────────────────
     embed_dim: int = 128
     max_seq_len: int = 1024
-    window_size_pairwise_input: int = 1024
     activate_pairwise_bias: bool = True
     activate_classical_attention: bool = True
 
     # ── Transformer blocks ────────────────────────────────────────────────
     num_blocks: int = 4
+    share_block_weights: bool = False
     num_heads: int = 8
     ffn_expansion: int = 2
     dropout: float = 0.1

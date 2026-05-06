@@ -165,8 +165,11 @@ class LearnedScalarNorm(nn.Module):
             initial_stds = torch.ones(nb_scalar)
 
         # We use nn.Parameter so the optimizer can update them
-        self.mean = nn.Parameter(initial_means)
-        self.log_std = nn.Parameter(torch.log(initial_stds + 1e-6))
+        # self.mean = nn.Parameter(initial_means)
+        # self.log_std = nn.Parameter(torch.log(initial_stds + 1e-6))
+        # Register as buffers, not parameters
+        self.register_buffer("mean", initial_means)
+        self.register_buffer("log_std", torch.log(initial_stds + 1e-6))
 
     def forward(self, x):
         # We use exp(log_std) to ensure the standard deviation stays positive
@@ -202,10 +205,18 @@ class ScalarFeatureProjector(nn.Module):
 
 class PairwiseContextProjector(nn.Module):
     """
-    Converts pairwise features into per-residue context and adds to embedding.
-    For each residue i, gathers a window of window_size//2 neighbours on each side
-    from the pairwise matrix (padding at boundaries), then projects the flattened
-    window to the embedding dimension with a 2-layer MLP.
+    Converts pairwise features into per-residue context vectors using
+    multi-scale pooling (local, distant, global).
+
+    For each residue i:
+      - short_ctx : mean over ±short_r sequence neighbours
+      - long_ctx  : mean over residues beyond ±short_r
+      - global_ctx: mean over all residues
+
+    The three contexts are concatenated → [B, L, 3C] then projected to [B, L, E].
+
+    This is robust to any sequence length and captures both local flexibility
+    and long-range allosteric signals (important for DCCM features).
     """
 
     def __init__(
@@ -213,45 +224,40 @@ class PairwiseContextProjector(nn.Module):
         nb_pairwise: int,
         embed_dim: int,
         dropout: float = 0.1,
-        window_size: int = 1024,
+        short_r: int = 10,  # radius for local context (±short_r residues)
     ):
         super().__init__()
-        self.E = embed_dim
-        self.half = window_size // 2
-        self.window = window_size  # fixed window, independent of embed_dim
-
-        in_dim = nb_pairwise * (self.window + 1)
+        self.short_r = short_r
+        # 3C: short + long + global
+        in_dim = nb_pairwise * 3
         self.mlp = MLP2(in_dim, embed_dim, embed_dim, dropout)
 
-    def _extract_windows(self, x_pairwise: torch.Tensor) -> torch.Tensor:
-        """
-        x_pairwise: [B, C, L, L]
-        Returns   : [B, L, C, window+1]
-        """
-        B, C, L, _ = x_pairwise.shape
-        half = self.half
-        window = self.window
-
-        # 1. Pad the last dimension
-        padded = F.pad(x_pairwise, (half, half), mode="constant", value=0.0)
-
-        # 2. Flatten the last two dimensions
-        padded_flat = padded.view(B, C, -1)
-
-        # 3. Extract the diagonal windows using a single strided unfold
-        # FIX: PyTorch Tensor.unfold only accepts positional arguments
-        windows_diag = padded_flat.unfold(-1, window + 1, L + window + 1)
-
-        # 4. Permute to the target shape and ensure it is contiguous in memory
-        return windows_diag.permute(0, 2, 1, 3).contiguous()
-
     def forward(self, x_pairwise: torch.Tensor) -> torch.Tensor:
-        """x_pairwise: [B, C, L, L]  →  [B, L, E]"""
+        """x_pairwise : [B, C, L, L]  →  [B, L, E]"""
         B, C, L, _ = x_pairwise.shape
 
-        windows = self._extract_windows(x_pairwise)  # [B, L, C, window+1]
-        flat = windows.reshape(B, L, C * (self.window + 1))
-        return self.mlp(flat)  # [B, L, E]
+        idx = torch.arange(L, device=x_pairwise.device)
+        dist = (idx.unsqueeze(0) - idx.unsqueeze(1)).abs()  # [L, L]
+        local_mask = (dist <= self.short_r).float()  # [L, L]
+        distant_mask = 1.0 - local_mask  # [L, L]
+
+        n_local = local_mask.sum(dim=-1).clamp(min=1)  # [L]
+        n_distant = distant_mask.sum(dim=-1).clamp(min=1)  # [L]
+
+        short_ctx = (x_pairwise * local_mask).sum(dim=-1) / n_local  # [B, C, L]
+        long_ctx = (x_pairwise * distant_mask).sum(dim=-1) / n_distant  # [B, C, L]
+        global_ctx = x_pairwise.mean(dim=-1)  # [B, C, L]
+
+        ctx = torch.cat(
+            [
+                short_ctx.permute(0, 2, 1),  # [B, L, C]
+                long_ctx.permute(0, 2, 1),  # [B, L, C]
+                global_ctx.permute(0, 2, 1),  # [B, L, C]
+            ],
+            dim=-1,
+        )  # [B, L, 3C]
+
+        return self.mlp(ctx)  # [B, L, E]
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +398,8 @@ class BiasedMultiHeadAttention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
         # One learnable gate per head
-        self.bias_gate = nn.Parameter(torch.ones(num_heads) * 0.5)
+        # self.bias_gate = nn.Parameter(torch.ones(num_heads) * 0.5)
+        self.bias_gate = nn.Parameter(torch.zeros(num_heads))
         self.activate_bias = activate_bias
         self.activate_classical_attention = activate_classical_attention
 
@@ -539,16 +546,18 @@ class ProteinMultiScaleTransformer(nn.Module):
         self.cfg = cfg
         self.E = cfg.embed_dim
         self.inputs_features = cfg.inputs_features
+        self.share_block_weights = (
+            cfg.share_block_weights
+        )  # Universal Transformer style
 
         # ── Input embeddings ──────────────────────────────────────────────
         use_pos_embedding = "positional_embeddings" in self.inputs_features
         self.seq_emb = SequenceEmbedding(
             cfg.vocab_size, self.E, cfg.max_seq_len, cfg.dropout, use_pos_embedding
         )
-        # Assuming cfg contains 'plm_dim' (e.g., 1280 for ESM-2 or 1536 for ESM-3)
         if "plm_embedding" in self.inputs_features:
             self.plm_proj = nn.Sequential(
-                nn.Linear(cfg.plm_dim, self.E),  # Try adding L1 on these weights?
+                nn.Linear(cfg.plm_dim, self.E),
                 nn.Dropout(0.6),
                 nn.GELU(),
                 nn.Linear(self.E, self.E),
@@ -575,7 +584,6 @@ class ProteinMultiScaleTransformer(nn.Module):
             cfg.nb_pairwise,
             self.E,
             cfg.dropout,
-            cfg.window_size_pairwise_input,
         )
         self.pair_wise_scaler = LearnedScalarNorm(
             cfg.nb_pairwise,
@@ -585,11 +593,19 @@ class ProteinMultiScaleTransformer(nn.Module):
         self.embed_norm = nn.LayerNorm(self.E)
 
         # ── Transformer blocks ────────────────────────────────────────────
-        self.blocks = nn.ModuleList(
-            [TransformerBlock(cfg) for _ in range(cfg.num_blocks)]
-        )
+        # If share_block_weights is True: create ONE block and reuse it
+        # cfg.num_blocks times during the forward pass (Universal Transformer).
+        # Parameter count drops from num_blocks × block_params to 1 × block_params,
+        # while depth (number of refinement passes) is preserved.
+        if self.share_block_weights:
+            self.shared_block = TransformerBlock(cfg)
+        else:
+            self.blocks = nn.ModuleList(
+                [TransformerBlock(cfg) for _ in range(cfg.num_blocks)]
+            )
+        self.num_blocks = cfg.num_blocks
 
-        # ── Pooling + head ────────────────────────────────────────────────
+        # ── Classification head ───────────────────────────────────────────
         self.head = ClassificationHead(self.E, cfg.num_classes, cfg.dropout)
 
     def forward(
@@ -602,6 +618,7 @@ class ProteinMultiScaleTransformer(nn.Module):
         plm_pad: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, L = tokens.shape
+
         if mask is not None:
             m = mask.float()
             pairwise_mask = m.unsqueeze(1).unsqueeze(-1) * m.unsqueeze(1).unsqueeze(2)
@@ -611,12 +628,13 @@ class ProteinMultiScaleTransformer(nn.Module):
         x_pairwise_permute_scaled = self.pair_wise_scaler(x_pairwise_permute)
         x_pairwise_scaled = x_pairwise_permute_scaled.permute(
             0, 3, 1, 2
-        )  # [B, C, L, L] back for extraction
+        )  # [B, C, L, L]
 
-        x = torch.zeros((B, L, self.E), device=tokens.device)
         # 1. Build initial [B, L, E] embedding
+        x = torch.zeros((B, L, self.E), device=tokens.device)
+
         if "token_embedding" in self.inputs_features:
-            x = self.seq_emb(tokens)  # sequence + positional
+            x = self.seq_emb(tokens)
 
         if "scalar_features" in self.inputs_features:
             x = x + self.scalar_proj(x_scalar, L)
@@ -633,8 +651,15 @@ class ProteinMultiScaleTransformer(nn.Module):
         x = self.embed_norm(x)
 
         # 2. Transformer blocks
-        for block in self.blocks:
-            x = block(x, x_pairwise_scaled, mask)
+        # Both branches iterate num_blocks times — the only difference is
+        # whether each iteration uses a fresh set of weights (independent)
+        # or the same shared block (weight-tied / Universal Transformer).
+        if self.share_block_weights:
+            for _ in range(self.num_blocks):
+                x = self.shared_block(x, x_pairwise_scaled, mask)
+        else:
+            for block in self.blocks:
+                x = block(x, x_pairwise_scaled, mask)
 
         # 3. Classification head
         return self.head(x)
